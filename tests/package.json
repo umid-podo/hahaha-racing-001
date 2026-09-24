@@ -1,0 +1,10 @@
+{
+  "name": "yoon-racing-game-tests",
+  "private": true,
+  "scripts": {
+    "test": "node verify.js"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
