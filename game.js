@@ -2,7 +2,7 @@
 
 // 밸런스 초깃값. planning/02-game-design.md와 03-shared-track-revision.md의 제안값이며 플레이테스트로 조정한다.
 const CONFIG = {
-  raceLength: 1000, // m
+  raceLength: 5000, // m. 오래 즐길 수 있게 길게 잡았다
   baseSpeed: 25, // m/s
   boostMul: 1.6,
   boostTime: 2,
@@ -14,6 +14,7 @@ const CONFIG = {
   laserLen: 30, // 레이저 광선 한 줄기의 길이 (m)
   winShowTime: 3,
   viewMeters: 36, // 주행 화면 너비에 보이는 거리
+  soloViewMeters: 90, // 솔로 모드는 한 화면이 넓어서 더 멀리 보인다
   accel: 2.4, // 속도 배율 변화율(/초). 부스터·감속이 약 0.25초에 걸쳐 반영된다
   offMin: 0.12, // 전후 오프셋 off가 차지하는 화면 가로 구간
   offMax: 0.55,
@@ -34,8 +35,14 @@ const CONFIG = {
   hazardSafe: 1, // 장애물 효과가 끝난 뒤 다시 걸리지 않는 시간
   snakeSpeed: 1.25, // 뱀이 도로를 가로지르는 속도 (도로 폭/초)
   snakeRest: 0.5, // 뱀이 도로 가장자리에서 쉬는 시간
+  stormShots: 12, // 레이저 폭풍: 무작위 줄로 쏘는 레이저 수
+  stormGap: 0.2, // 레이저 사이 간격(초)
+  shieldTime: 4, // 레이저 폭풍을 쓴 사람의 무적 시간
+  soloAI: 12, // 솔로 모드 AI 수
 };
-const OFF_MAX = (CONFIG.offMax - CONFIG.offMin) * CONFIG.viewMeters;
+// 주행 화면에 보이는 거리. 솔로 모드는 화면 하나를 크게 쓰므로 더 넓다.
+const viewM = () => (game.solo ? CONFIG.soloViewMeters : CONFIG.viewMeters);
+let OFF_MAX = 0; // 전후 오프셋 최댓값(m). 보이는 거리에 따라 computeLayout에서 정한다
 const LAG_MAX = (CONFIG.boostMul - 1) * CONFIG.baseSpeed * CONFIG.camLag;
 
 const PLAYERS = [
@@ -45,7 +52,24 @@ const PLAYERS = [
   { name: 'Green', color: '#3fae5a' },
   { name: 'Purple', color: '#8e5bd0' },
   { name: 'Orange', color: '#f08a2e' },
+  // 솔로 모드 AI용
+  { name: 'Pink', color: '#ef6fa8' },
+  { name: 'Teal', color: '#1fa9a0' },
+  { name: 'Brown', color: '#9a6a3c' },
+  { name: 'Navy', color: '#34488f' },
+  { name: 'Lime', color: '#9bc53d' },
+  { name: 'Gray', color: '#8a8a8a' },
+  { name: 'Sky', color: '#5bc0eb' },
 ];
+
+// 솔로 모드 AI 난이도. speed는 기본 속도 배율, react는 판단 주기(초), look은 내다보는 거리(m),
+// avoid는 장애물·공격을 피하려 드는 확률, delay는 무기를 들고 기다리는 시간(초), off는 앞으로 나서는 정도다.
+const LEVELS = {
+  easy: { name: '쉬운 AI', speed: 0.85, react: 0.8, look: 18, avoid: 0.25, delay: 3, off: 0.25 },
+  normal: { name: '보통 AI', speed: 0.93, react: 0.45, look: 28, avoid: 0.55, delay: 1.5, off: 0.45 },
+  hard: { name: '어려운 AI', speed: 1, react: 0.25, look: 40, avoid: 0.85, delay: 0.7, off: 0.7 },
+  expert: { name: '전문가 AI', speed: 1.07, react: 0.1, look: 55, avoid: 0.98, delay: 0.25, off: 0.95 },
+};
 
 // 코스별 색과 장애물. tip은 준비 화면, hint는 도움말 칸에 쓴다.
 const COURSES = {
@@ -80,9 +104,12 @@ let W = 0;
 let H = 0;
 
 const game = {
-  state: 'title', // title | select | course | ready | countdown | race | cutscene | paused | win | result
+  state: 'title', // title | select | level | course | ready | countdown | race | cutscene | paused | win | result
   selected: 2,
-  count: 2,
+  count: 2, // 카트 수(AI 포함)
+  humans: 2, // 이 기기에서 조작하는 사람 수 = 패널 수
+  solo: false, // 솔로 모드: 사람 1명 + AI 12명
+  level: 'normal',
   course: 'road',
   players: [],
   items: [],
@@ -90,6 +117,8 @@ const game = {
   hazardT: 0, // 다음 바나나를 던질 때까지
   raceT: 0, // 경기 중에만 흐르는 시계. 뱀의 움직임에 쓴다
   cut: null, // 로켓 컷신 { by, t }
+  storms: [], // 레이저 폭풍 { by, left, next }
+  banner: null, // 모든 화면 위쪽에 잠깐 뜨는 알림 { text, color, t }
   shots: [],
   beams: [],
   fx: [],
@@ -284,6 +313,11 @@ const SOUNDS = {
   },
   dizzy: () => [0, 0.15, 0.3].forEach((at) => tone('sine', 500, 300, 0.15, 0.25, at)),
   toss: () => noise(800, 2000, 0.2, 0.3),
+  // 레이저 폭풍: 전기가 튀는 소리와 올라가는 경보
+  storm: () => {
+    noise(3000, 6000, 0.5, 0.4);
+    [0, 0.12, 0.24].forEach((at, k) => tone('square', 600 + k * 300, 1200 + k * 300, 0.1, 0.18, at));
+  },
   win: () => [523, 659, 784, 1047].forEach((f, k) => tone('square', f, f, k < 3 ? 0.14 : 0.6, 0.22, k * 0.13)),
 };
 
@@ -304,9 +338,10 @@ function resize() {
 }
 
 function computeLayout() {
-  const n = game.count;
+  OFF_MAX = (CONFIG.offMax - CONFIG.offMin) * viewM();
+  const n = game.humans;
   const barH = clamp(H * 0.08, 32, 48);
-  let cols = n === 2 || n === 4 ? 2 : 3;
+  let cols = n === 1 ? 1 : n === 2 || n === 4 ? 2 : 3;
   let rows = n <= 3 ? 1 : 2;
   if (H > W) [cols, rows] = [rows, cols];
   const cw = W / cols;
@@ -321,7 +356,7 @@ function computeLayout() {
     const h = ch - m * 2;
     const ix = x + inner;
     const iw = w - inner * 2;
-    const driveH = (h - inner * 2) * 0.6;
+    const driveH = (h - inner * 2) * (game.solo ? 0.7 : 0.6);
     const btnH = clamp(h * 0.13, 40, 64);
     const padY = y + inner + driveH + btnH + 8;
     panels.push({
@@ -338,7 +373,8 @@ function computeLayout() {
 // 앞코는 원점에서 NOSE만큼 앞이고, 출발선·결승선은 앞코가 닿는 자리에 그린다.
 const NOSE = 56;
 function kartScale(d) {
-  // 카트를 작게 그려 도로를 넓게 쓴다.
+  // 카트를 작게 그려 도로를 넓게 쓴다. 솔로 모드는 13대가 달리므로 도로가 훨씬 넓다.
+  if (game.solo) return Math.min((d.h * 0.14) / 136, (d.w * 0.08) / 116);
   return Math.min((d.h * 0.28) / 136, (d.w * 0.2) / 116);
 }
 
@@ -349,7 +385,7 @@ function view(i = 0) {
   const s = kartScale(d);
   const y0 = d.y + 166 * s;
   const y1 = d.y + d.h - 16 * s;
-  return { d, s, y0, y1, rh: y1 - y0, ppm: d.w / CONFIG.viewMeters, anchor: d.x + d.w * CONFIG.offMin };
+  return { d, s, y0, y1, rh: y1 - y0, ppm: d.w / viewM(), anchor: d.x + d.w * CONFIG.offMin };
 }
 
 // 보는 사람(viewer)의 화면에서 대상(target) 카트의 위치. 카메라는 viewer의 base를 따라간다.
@@ -363,8 +399,13 @@ function padInner(pad) {
   return { x: pad.x + m, y: pad.y + m, w: pad.w - m * 2, h: pad.h - m * 2 };
 }
 
+// 솔로 모드는 상대가 12명이라 번호 대신 '바로 앞 상대' 버튼 하나를 둔다(target -1).
 function attackButtons(pan, i) {
   const b = pan.btns;
+  if (game.solo) {
+    const iconW = b.h * 1.1;
+    return [{ target: -1, x: b.x + iconW + 6, y: b.y, w: b.w - iconW - 6, h: b.h }];
+  }
   const n = game.count - 1;
   const iconW = b.h * 1.1;
   const gap = 6;
@@ -389,6 +430,10 @@ function newRace() {
       mul: 0, lag: 0, spin: 0, dustT: 0, row: -2, // row: 마지막으로 아이템을 얻은 줄
       boost: 0, slow: 0, protect: 0, hitFx: 0, attack: false, laser: false, touch: null, aim: null,
       slip: 0, slipDir: 1, freeze: 0, dizzy: 0, safe: 0, // 코스 장애물 상태
+      shield: 0, // 레이저 폭풍을 쓴 뒤의 무적
+      // 사람이 조작하지 않는 카트(솔로 모드)는 AI가 몬다. skill은 난이도 속도에 약간의 개인차를 섞은 값이다.
+      ai: i >= game.humans ? { think: Math.random() * 0.5, hold: 0, wander: Math.random() } : null,
+      skill: i >= game.humans ? LEVELS[game.level].speed * (1 + (Math.random() - 0.5) * 0.04) : 1,
     };
   });
   game.items = makeItems(game.count);
@@ -396,6 +441,8 @@ function newRace() {
   game.hazardT = 1.5;
   game.raceT = 0;
   game.cut = null;
+  game.storms = [];
+  game.banner = null;
   game.shots = [];
   game.beams = [];
   game.fx = [];
@@ -410,7 +457,7 @@ function newRace() {
 // 선두가 독차지하지 않도록 한 지점에 가로로 나란한 줄을 놓는다.
 function makeItems(n) {
   const items = [];
-  const cells = n <= 3 ? 2 : 3;
+  const cells = n <= 3 ? 2 : n <= 6 ? 3 : 5;
   let wx = 105 + Math.random() * 20;
   for (let row = 0; wx <= CONFIG.raceLength - 100; row++) {
     // 줄마다 부스터와 무기(공격 또는 레이저)가 적어도 하나씩 섞인다.
@@ -423,30 +470,37 @@ function makeItems(n) {
     });
     wx += 45 + Math.random() * 30;
   }
-  // 특별 아이템 로켓: 경기 중간(500m 근처) 두 줄 사이에 하나만 놓는다.
+  // 특별 아이템은 줄에 속하지 않고 두 줄 사이에 하나씩 놓는다.
+  // 로켓은 경기 한가운데, 레이저 폭풍은 1/4 지점과 3/4 지점에 있다.
   const xs = rowXs(items);
-  let k = 0;
-  for (let j = 1; j < xs.length - 1; j++) if (Math.abs((xs[j] + xs[j + 1]) / 2 - 500) < Math.abs((xs[k] + xs[k + 1]) / 2 - 500)) k = j;
-  items.push({ wx: (xs[k] + xs[k + 1]) / 2, lat: 0.3 + Math.random() * 0.4, type: 'rocket', row: -1, takenBy: null });
+  for (const [type, at] of [['storm', 0.25], ['rocket', 0.5], ['storm', 0.75]]) {
+    const mid = (j) => (xs[j] + xs[j + 1]) / 2;
+    const goal = CONFIG.raceLength * at;
+    let k = 0;
+    for (let j = 1; j < xs.length - 1; j++) if (Math.abs(mid(j) - goal) < Math.abs(mid(k) - goal)) k = j;
+    items.push({ wx: mid(k), lat: 0.3 + Math.random() * 0.4, type, row: -1, takenBy: null });
+  }
   return items;
 }
 
-// 아이템 줄들의 위치(m). 로켓은 줄에 속하지 않는다.
+const SPECIAL = new Set(['rocket', 'storm']);
+
+// 아이템 줄들의 위치(m). 특별 아이템은 줄에 속하지 않는다.
 function rowXs(items) {
-  return [...new Set(items.filter((i) => i.type !== 'rocket').map((i) => i.wx))].sort((a, b) => a - b);
+  return [...new Set(items.filter((i) => !SPECIAL.has(i.type)).map((i) => i.wx))].sort((a, b) => a - b);
 }
 
 // 코스 장애물. 물웅덩이와 뱀은 아이템 줄 사이에 놓아 아이템과 겹치지 않게 한다.
 function makeHazards(items, n) {
   const hz = { puddles: [], snakes: [], monkeys: [], bananas: [] };
   const xs = rowXs(items);
-  const rocket = items.find((i) => i.type === 'rocket');
+  const specials = items.filter((i) => SPECIAL.has(i.type));
   const spots = [60];
   for (let k = 0; k + 1 < xs.length; k++) spots.push((xs[k] + xs[k + 1]) / 2);
   spots.push((xs[xs.length - 1] + CONFIG.raceLength) / 2);
-  const free = spots.filter((x) => !rocket || Math.abs(x - rocket.wx) > 5);
+  const free = spots.filter((x) => specials.every((it) => Math.abs(x - it.wx) > 5));
   if (game.course === 'arctic') {
-    const per = n <= 3 ? 1 : 2;
+    const per = n <= 3 ? 1 : n <= 6 ? 2 : 3;
     for (const x of free) {
       for (let c = 0; c < per; c++) {
         const lat = per === 1 ? 0.2 + Math.random() * 0.6 : (c + 0.3 + Math.random() * 0.4) / per;
@@ -585,6 +639,7 @@ function bumpKarts(v) {
 function updateRace(dt) {
   game.goFlash = Math.max(0, game.goFlash - dt);
   game.raceT += dt;
+  if (game.solo) updateAI(dt);
   moveKarts(dt, true);
 
   const v = view();
@@ -593,7 +648,7 @@ function updateRace(dt) {
     // 따라잡기 보정: 선두와 멀수록 조금 빨라진다.
     const catchUp = Math.min(CONFIG.catchMax, Math.floor((lead - p.wx) / CONFIG.catchStep) * CONFIG.catchGain);
     const target = p.freeze > 0 ? 0
-      : (p.boost > 0 ? CONFIG.boostMul : 1) * (p.slow > 0 ? CONFIG.slowMul : 1) * (p.slip > 0 ? CONFIG.slipMul : 1) * (1 + catchUp);
+      : (p.boost > 0 ? CONFIG.boostMul : 1) * (p.slow > 0 ? CONFIG.slowMul : 1) * (p.slip > 0 ? CONFIG.slipMul : 1) * (1 + catchUp) * p.skill;
     p.mul += clamp(target - p.mul, -CONFIG.accel * dt, CONFIG.accel * dt);
     p.base += CONFIG.baseSpeed * p.mul * dt;
     // 빨라지면 카메라가 늦게 따라와 카트가 화면 앞쪽으로 튀어나간다.
@@ -606,6 +661,7 @@ function updateRace(dt) {
     p.slip = Math.max(0, p.slip - dt);
     p.freeze = Math.max(0, p.freeze - dt);
     p.safe = Math.max(0, p.safe - dt);
+    p.shield = Math.max(0, p.shield - dt);
     if (p.dizzy > 0) {
       p.dizzy = Math.max(0, p.dizzy - dt);
       if (p.dizzy === 0) resteer(p); // 해롱해롱이 풀리면 손가락 위치대로 다시 조향한다
@@ -620,7 +676,9 @@ function updateRace(dt) {
   takeItems(v);
   if (game.state === 'cutscene') return; // 로켓을 얻으면 경기를 멈추고 컷신으로 넘어간다
   updateHazards(dt, v);
+  updateStorms(dt);
   updateBeams(dt, v);
+  if (game.banner && (game.banner.t += dt) > 2) game.banner = null;
 
   for (const s of game.shots) s.t += dt;
   for (const s of game.shots.filter((s) => s.t >= CONFIG.warnTime)) resolveShot(s);
@@ -640,6 +698,7 @@ function updateRace(dt) {
 // 무기(공격·레이저)는 하나만 가질 수 있어서, 무기를 가진 카트는 무기 칸을 소비하지 않고 지나간다.
 function canTake(p, item) {
   if (item.type === 'rocket') return rankOf(p) > 1;
+  if (item.type === 'storm') return true;
   if (item.row <= p.row + 1) return false;
   if (item.type === 'boost') return rankOf(p) > 1;
   return !p.attack && !p.laser;
@@ -669,6 +728,10 @@ function takeItems(v) {
     game.fx.push({ kind: 'pick', wx: item.wx, lat: item.lat, by: best.i, t: 0 });
     sfx(item.type);
     if (item.type === 'rocket') return startCutscene(best);
+    if (item.type === 'storm') {
+      startStorm(best);
+      continue;
+    }
     best.row = item.row;
     if (item.type === 'boost') best.boost = CONFIG.boostTime;
     else best[item.type] = true;
@@ -701,13 +764,111 @@ function updateCutscene(dt) {
   game.state = 'race';
 }
 
+// ---------- 레이저 폭풍 ----------
+
+// 레이저 폭풍 칸을 밟으면 무작위 줄로 레이저가 연달아 날아간다. 밟은 사람은 그동안 무적이다.
+function startStorm(p) {
+  game.storms.push({ by: p.i, left: CONFIG.stormShots, next: 0 });
+  p.shield = CONFIG.shieldTime;
+  game.banner = { text: `${PLAYERS[p.i].name} 레이저 폭풍!`, color: PLAYERS[p.i].color, t: 0 };
+}
+
+// 레이저는 맨 뒤 카트보다 뒤에서 출발해 선두보다 조금 앞에서 사라지므로 어느 줄에 있든 누구나 맞을 수 있다.
+function updateStorms(dt) {
+  for (const st of game.storms) {
+    st.next -= dt;
+    while (st.next <= 0 && st.left > 0) {
+      st.next += CONFIG.stormGap;
+      st.left--;
+      const wxs = game.players.map((q) => q.wx);
+      const x0 = Math.min(...wxs) - 5 - Math.random() * 15;
+      game.beams.push({ from: st.by, x0, lat: 0.03 + Math.random() * 0.94, t: 0, passed: new Set([st.by]), end: Math.max(...wxs) + 60 });
+      if (st.left % 2 === 0) sfx('beam');
+    }
+  }
+  game.storms = game.storms.filter((st) => st.left > 0);
+}
+
+// ---------- 솔로 모드 AI ----------
+
+// 바로 앞 상대. 선두라면 바로 뒤 상대를 노린다.
+function nearestAhead(p) {
+  const others = game.players.filter((q) => q !== p);
+  const ahead = others.filter((q) => q.wx > p.wx).sort((a, b) => a.wx - b.wx);
+  return ahead[0] || others.sort((a, b) => b.wx - a.wx)[0];
+}
+
+function updateAI(dt) {
+  const L = LEVELS[game.level];
+  for (const p of game.players) {
+    if (!p.ai) continue;
+    // 무기는 조금 들고 있다가 쓴다. 레이저는 앞쪽 같은 줄에 누가 있을 때 쏜다.
+    p.ai.hold = p.attack || p.laser ? p.ai.hold + dt : 0;
+    if (p.attack && p.ai.hold > L.delay) fire(p, nearestAhead(p).i);
+    if (p.laser && p.ai.hold > L.delay) {
+      const lined = game.players.some((q) => q !== p && q.wx > p.wx && q.wx < p.wx + 150 && Math.abs(q.lat - p.lat) < 0.05);
+      if (lined || p.ai.hold > L.delay * 3) fireLaser(p);
+    }
+    p.tOff = OFF_MAX * clamp(L.off + Math.sin(game.raceT * 0.3 + p.i) * 0.1, 0, 1);
+    p.ai.think -= dt;
+    if (p.ai.think > 0) continue;
+    p.ai.think = L.react * (0.7 + Math.random() * 0.6);
+    // 해롱해롱이면 어디로 갈지 모른다.
+    p.tLat = p.dizzy > 0 ? Math.random() : aiPickLat(p, L);
+  }
+}
+
+// 도로 폭을 21칸으로 나눠 점수가 가장 높은 줄을 고른다. 얻을 수 있는 아이템은 더하고,
+// 알아챈 장애물·날아오는 공격·뒤에서 오는 레이저가 있는 줄은 뺀다. 가까운 위험일수록 크게 빼고,
+// 옆으로 옮겨 가는 사이에 지나갈 위험(가는 길목)도 뺀다.
+function aiPickLat(p, L) {
+  const v = view();
+  const band = (26 * v.s) / v.rh;
+  const latSpeed = (CONFIG.kartSpeed * v.d.w) / v.rh; // 초당 좌우 이동량
+  const speed = CONFIG.baseSpeed * Math.max(0.5, p.mul);
+  const near = (wx, len = 0) => wx + len / 2 > p.wx - 2 && wx - len / 2 < p.wx + L.look;
+  const gap = (wx, len = 0) => Math.max(0, wx - len / 2 - p.wx);
+  // 장애물마다 알아챌지 한 번 정해 두어(avoid 확률), 판단을 자주 하는 AI가 오히려 더 자주 놓치지 않게 한다.
+  const sees = (k) => rnd(k * 7.31 + p.i * 13.7 + p.ai.wander * 101) < L.avoid;
+  const hz = game.hazards;
+  const items = game.items.filter((it) => it.takenBy === null && near(it.wx) && canTake(p, it));
+  const danger = []; // [줄, 반폭, 비용, 남은 거리(m)]
+  hz.puddles.forEach((pd, k) => near(pd.wx, pd.len) && sees(k) && danger.push([pd.lat, pd.hl + band * 1.3, 100, gap(pd.wx, pd.len)]));
+  for (const b of hz.bananas) if (near(b.wx) && sees(b.wx)) danger.push([b.lat, band * 1.5, 100, gap(b.wx)]);
+  hz.snakes.forEach((sn, k) => near(sn.wx) && sees(k + 0.5) && danger.push([snakePos(sn).lat, 0.3, 40, gap(sn.wx)]));
+  if (Math.random() < L.avoid) {
+    for (const sh of game.shots) if (sh.to === p.i) danger.push([sh.v, band * 2, 100, 0]);
+    for (const b of game.beams) if (!b.passed.has(p.i) && beamFront(b) < p.wx) danger.push([b.lat, band * 1.5, 80, 0]);
+  }
+  const value = { boost: 30, rocket: 60, storm: 50 };
+  let best = p.lat;
+  let bestScore = -Infinity;
+  for (let k = 0; k <= 20; k++) {
+    const lat = 0.02 + k * 0.048;
+    const lo = Math.min(lat, p.lat);
+    const hi = Math.max(lat, p.lat);
+    const reach = (Math.abs(lat - p.lat) / latSpeed) * speed + 3; // 옮겨 가는 동안 달리는 거리
+    let score = -Math.abs(lat - p.lat) * 8 + Math.sin(p.ai.wander * 9 + lat * 5) * 0.5;
+    for (const it of items) if (Math.abs(it.lat - lat) < band) score += (value[it.type] ?? 20) * (1 - ((it.wx - p.wx) / L.look) * 0.5);
+    for (const [dl, w, cost, dist] of danger) {
+      if (Math.abs(dl - lat) < w) score -= cost * (1 - 0.7 * clamp(dist / L.look, 0, 1));
+      else if (dist < reach && dl + w > lo && dl - w < hi) score -= cost;
+    }
+    if (score > bestScore) {
+      best = lat;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 // ---------- 코스 장애물 ----------
 
 const HAZARD_TIME = { slip: 'slipTime', freeze: 'freezeTime', dizzy: 'dizzyTime' };
 const HAZARD_TEXT = { slip: '미끌!', freeze: '꽁꽁!', dizzy: '해롱~' };
 
 function applyHazard(p, kind) {
-  if (p.safe > 0) return false;
+  if (p.safe > 0 || p.shield > 0) return false;
   const time = CONFIG[HAZARD_TIME[kind]];
   p[kind] = time;
   p.safe = time + CONFIG.hazardSafe;
@@ -741,7 +902,8 @@ function updateHazards(dt, v) {
     game.hazardT -= dt;
     if (game.hazardT <= 0) {
       game.hazardT = (2.4 + Math.random() * 2.4) / game.count;
-      const p = game.players[Math.floor(Math.random() * game.count)];
+      // 솔로 모드는 원숭이가 사람 쪽을 조금 더 자주 노린다.
+      const p = game.solo && Math.random() < 0.3 ? game.players[0] : game.players[Math.floor(Math.random() * game.count)];
       const near = hz.monkeys.filter((m) => m.wx > p.wx + 14 && m.wx < p.wx + 45); // 원숭이 간격(최대 40m)보다 넓게 찾는다
       const m = near[Math.floor(Math.random() * near.length)];
       if (m) {
@@ -760,6 +922,7 @@ const BANANA_FLY = 0.6; // 바나나 껍질이 날아가 도로에 떨어지기�
 // 비추적 공격. 대상이 계속 전진하므로 예상 위치는 대상의 base에 상대적인 값(off, lat)으로 기록한다.
 function fire(p, target) {
   if (!p.attack) return;
+  if (target < 0) target = nearestAhead(p).i;
   p.attack = false;
   const t = game.players[target];
   game.shots.push({ from: p.i, to: target, u: t.off, v: t.lat, t: 0 });
@@ -770,8 +933,8 @@ function fire(p, target) {
 function shotStart(s) {
   const from = game.players[s.from];
   const base = game.players[s.to].base;
-  const lo = base - CONFIG.viewMeters * CONFIG.offMin - 3;
-  const hi = base + CONFIG.viewMeters * (1 - CONFIG.offMin) + 3;
+  const lo = base - viewM() * CONFIG.offMin - 3;
+  const hi = base + viewM() * (1 - CONFIG.offMin) + 3;
   return { wx: clamp(from.wx, lo, hi), lat: from.lat };
 }
 
@@ -779,7 +942,7 @@ function resolveShot(s) {
   const p = game.players[s.to];
   const v = view();
   const onTarget = Math.abs(s.u - p.off) < (60 * v.s) / v.ppm && Math.abs(s.v - p.lat) < (26 * v.s) / v.rh;
-  const hitNow = onTarget && p.protect <= 0;
+  const hitNow = onTarget && p.protect <= 0 && p.shield <= 0;
   if (hitNow) {
     p.slow = CONFIG.slowTime;
     p.protect = CONFIG.protectTime;
@@ -810,7 +973,7 @@ function updateBeams(dt, v) {
     for (const p of game.players) {
       if (b.passed.has(p.i) || p.wx > front) continue;
       b.passed.add(p.i);
-      if (Math.abs(p.lat - b.lat) >= band || p.protect > 0) continue;
+      if (Math.abs(p.lat - b.lat) >= band || p.protect > 0 || p.shield > 0) continue;
       p.slow = CONFIG.slowTime;
       p.protect = CONFIG.protectTime;
       p.hitFx = 0.6;
@@ -818,7 +981,7 @@ function updateBeams(dt, v) {
       sfx('hit');
     }
   }
-  game.beams = game.beams.filter((b) => beamFront(b) - CONFIG.laserLen < CONFIG.raceLength + 20);
+  game.beams = game.beams.filter((b) => beamFront(b) - CONFIG.laserLen < (b.end ?? CONFIG.raceLength) + 20);
 }
 
 function finish(winners) {
@@ -828,13 +991,14 @@ function finish(winners) {
   for (const p of winners) game.wins[p.i]++;
   game.shots = [];
   game.beams = [];
+  game.storms = [];
   releaseInput();
   sfx('win');
 }
 
 // ---------- 화면 전환 ----------
 
-const SCREENS = ['title', 'select', 'course', 'ready', 'pause', 'result', 'confirm'];
+const SCREENS = ['title', 'select', 'level', 'course', 'ready', 'pause', 'result', 'confirm'];
 let confirmBack = null;
 
 function show(id) {
@@ -855,6 +1019,10 @@ function updateSelect() {
   $('phoneNote').classList.toggle('hidden', !(small && game.selected >= 3));
 }
 
+function updateLevel() {
+  for (const b of $('levels').children) b.classList.toggle('on', b.dataset.l === game.level);
+}
+
 function updateCourse() {
   for (const b of $('courses').children) b.classList.toggle('on', b.dataset.c === game.course);
   $('courseNote').textContent = COURSES[game.course].tip;
@@ -869,10 +1037,13 @@ function showResult() {
 }
 
 // 시상대에 오를 순서. 인원수만큼(최대 6등) 나온다.
+// 솔로 모드는 13명이라 상위 5명과, 순위 밖이면 사람 플레이어만 보여준다.
 function standings() {
-  return [...game.players]
+  const all = [...game.players]
     .sort((a, b) => b.wx - a.wx)
     .map((p) => ({ p, rank: rankOf(p), rec: p.wx >= CONFIG.raceLength ? '완주' : `${Math.floor(p.wx)}m` }));
+  if (all.length <= 6) return all;
+  return all.filter((e, k) => k < 5 || !e.p.ai);
 }
 
 function askTitle(from) {
@@ -896,13 +1067,36 @@ for (const b of $('counts').children) {
   });
 }
 
-tap('btnSelect', () => {
-  if (game.state !== 'select') return;
-  game.count = game.selected;
-  game.wins = Array(game.count).fill(0);
+function showCourse() {
   game.state = 'course';
   updateCourse();
   show('course');
+}
+
+// 인원수 1은 솔로 모드: AI 12명과 대결하고, 코스 전에 AI 난이도를 고른다.
+tap('btnSelect', () => {
+  if (game.state !== 'select') return;
+  game.solo = game.selected === 1;
+  game.humans = game.selected;
+  game.count = game.solo ? 1 + CONFIG.soloAI : game.selected;
+  game.wins = Array(game.count).fill(0);
+  if (!game.solo) return showCourse();
+  game.state = 'level';
+  updateLevel();
+  show('level');
+});
+
+for (const b of $('levels').children) {
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    sfx('tap');
+    game.level = b.dataset.l;
+    updateLevel();
+  });
+}
+
+tap('btnLevel', () => {
+  if (game.state === 'level') showCourse();
 });
 
 // 코스를 누르면 타이틀 배경이 그 코스로 바뀐다.
@@ -921,6 +1115,8 @@ tap('btnCourse', () => {
   game.state = 'ready';
   $('courseName').textContent = COURSES[game.course].name;
   $('courseTip').textContent = COURSES[game.course].tip;
+  $('modeTip').textContent = game.solo ? `솔로 모드: ${LEVELS[game.level].name} ${CONFIG.soloAI}명과 대결! 공격은 바로 앞 상대에게 날아가요.` : '';
+  $('modeTip').classList.toggle('hidden', !game.solo);
   show('ready');
 });
 
@@ -984,7 +1180,7 @@ canvas.addEventListener('pointerdown', (e) => {
   }
 
   // 터치는 처음 닿은 패널에 귀속되고, 조향인지 공격인지도 이때 정해진다.
-  const pi = game.layout.panels.findIndex((pan, i) => i < game.count && hit(pan, x, y));
+  const pi = game.layout.panels.findIndex((pan, i) => i < game.humans && hit(pan, x, y));
   if (pi < 0) return;
   const pan = game.layout.panels[pi];
   const p = game.players[pi];
@@ -1283,6 +1479,18 @@ function drawKart(x, y, s, color, pose, o = {}) {
       ctx.stroke();
     }
   }
+  // 레이저 폭풍을 쓴 사람의 무적 보호막
+  if (o.shield) {
+    ctx.globalAlpha = 0.35 + 0.15 * Math.sin(t * 12);
+    ctx.fillStyle = '#e6d4ff';
+    ctx.strokeStyle = '#8e5bd0';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.ellipse(0, (hy - 30) / 2, 76, (30 - hy) / 2 + 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.stroke();
+  }
   // 얼음 덩어리에 갇힌 모습
   if (o.frozen) {
     ctx.globalAlpha = 0.55;
@@ -1545,7 +1753,7 @@ function drawItem(type, x, y, s) {
   ctx.strokeStyle = INK;
   ctx.lineJoin = 'round';
   rr(-26, -26, 52, 52, 8);
-  ctx.fillStyle = { boost: '#ffe9a3', attack: '#ffc9c2', laser: '#c9e8ff', rocket: '#ffe27a' }[type];
+  ctx.fillStyle = { boost: '#ffe9a3', attack: '#ffc9c2', laser: '#c9e8ff', rocket: '#ffe27a', storm: '#e6d4ff' }[type];
   ctx.fill();
   ctx.stroke();
   if (type === 'rocket') {
@@ -1556,6 +1764,27 @@ function drawItem(type, x, y, s) {
     ctx.stroke();
     ctx.restore();
     drawRocket(x, y - (22 + Math.sin(game.time * 5) * 4) * s, s * 0.7, -Math.PI / 2, '#e8433a');
+    return;
+  }
+  if (type === 'storm') {
+    // 번쩍이는 테두리와 여러 줄의 광선
+    ctx.strokeStyle = '#8e5bd0';
+    ctx.lineWidth = 3 + Math.sin(game.time * 12) * 2;
+    rr(-32, -32, 64, 64, 10);
+    ctx.stroke();
+    ctx.lineWidth = 4;
+    for (const [ly, c] of [[-14, '#e8433a'], [-4, '#2f7be0'], [6, '#3fae5a'], [16, '#f2b91f']]) {
+      ctx.strokeStyle = c;
+      const off = ((game.time * 60 + ly * 3) % 20) - 10;
+      line(-22 + off * 0.3, ly, 22 + off * 0.3, ly);
+    }
+    ctx.restore();
+    spiky(x, y - (24 + Math.sin(game.time * 6) * 3) * s, 13 * s, 6 * s, 6, game.time * 3);
+    ctx.fillStyle = '#ffe066';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(1.5, 2.5 * s);
+    ctx.fill();
+    ctx.stroke();
     return;
   }
   if (type === 'laser') {
@@ -1941,7 +2170,7 @@ function drawDrive(d, me) {
     drawKart(k.x, k.y, s, PLAYERS[q.i].color, pose, {
       boost: q.boost > 0, slow: q.slow > 0, wobble: q.hitFx / 0.6, blink: q.protect > 0,
       mul: q.mul, spin: q.spin, tag: q.i + 1, me: q === me,
-      slip: q.slip > 0 && CONFIG.slipTime - q.slip, frozen: q.freeze > 0, dizzy: q.dizzy > 0,
+      slip: q.slip > 0 && CONFIG.slipTime - q.slip, frozen: q.freeze > 0, dizzy: q.dizzy > 0, shield: q.shield > 0,
     });
   }
 
@@ -2100,6 +2329,7 @@ function drawDrive(d, me) {
     const side = kx < d.x - 62 * s * z ? -1 : kx > d.x + d.w + 62 * s * z ? 1 : 0;
     if (!side) continue;
     const y = Math.max(clamp(yOf(q.lat) - 30 * s, d.y + fs * 2.4, bottom - es), lastY[side] + es * 1.5);
+    if (y > bottom - es * 0.5) continue; // 솔로 모드처럼 많으면 넘치는 표시는 생략한다
     lastY[side] = y;
     const ex = side < 0 ? d.x + 4 : d.x + d.w - 4;
     const align = side < 0 ? 'left' : 'right';
@@ -2133,6 +2363,7 @@ function drawDrive(d, me) {
     me.slip > 0 && [`미끌미끌 ${me.slip.toFixed(1)}s`, '#e8a100'],
     me.freeze > 0 && [`꽁꽁 ${me.freeze.toFixed(1)}s`, '#2f7be0'],
     me.dizzy > 0 && [`해롱해롱 ${me.dizzy.toFixed(1)}s`, '#8e5bd0'],
+    me.shield > 0 && [`무적 ${me.shield.toFixed(1)}s`, '#8e5bd0'],
   ].filter(Boolean);
   status.forEach(([label, color], k) => text(label, d.x + d.w - 6, d.y + fs * (2.1 + k * 1.1), fs * 0.9, color, 'right', SKY));
 
@@ -2176,14 +2407,15 @@ function drawButtons(pan, p) {
     const pulse = armed ? 1.5 + Math.sin(game.time * 10) * 1.5 : 0;
     rr(btn.x, btn.y + 2, btn.w, btn.h - 4, 10);
     ctx.globalAlpha = armed ? 1 : 0.25;
-    ctx.fillStyle = PLAYERS[btn.target].color;
+    ctx.fillStyle = btn.target < 0 ? '#e8433a' : PLAYERS[btn.target].color;
     ctx.fill();
     ctx.globalAlpha = 1;
     ctx.strokeStyle = armed ? INK : 'rgba(43,38,34,.3)';
     ctx.lineWidth = 2 + pulse;
     ctx.stroke();
-    const fs = Math.min(btn.h * 0.55, btn.w * 0.5);
-    text(String(btn.target + 1), btn.x + btn.w / 2, btn.y + btn.h / 2 + 1, fs,
+    const label = btn.target < 0 ? `바로 앞 ${nearestAhead(p).i + 1}번에게 공격!` : String(btn.target + 1);
+    const fs = btn.target < 0 ? Math.min(btn.h * 0.45, btn.w * 0.06) : Math.min(btn.h * 0.55, btn.w * 0.5);
+    text(label, btn.x + btn.w / 2, btn.y + btn.h / 2 + 1, fs,
       armed ? '#fff' : 'rgba(43,38,34,.45)', 'center', armed ? INK : undefined);
   }
 }
@@ -2238,7 +2470,7 @@ function drawHelpCell(pan) {
   ctx.stroke();
   ctx.setLineDash([]);
   const lines = ['조작 안내', '터치 화면에 손가락 → 카트 이동', '≫ 부스터: 빨라져요 (1등은 못 먹어요)', '✸ 공격 칸 → 상대 번호 터치', '레이저 칸 → 레이저 발사! 앞쪽 끝까지',
-    '로켓 → 상대 모두에게 발사!', COURSES[game.course].hint];
+    '레이저 폭풍 → 무작위 레이저, 나는 무적', '로켓 → 상대 모두에게 발사!', COURSES[game.course].hint];
   const fs = clamp(Math.min(pan.h / (lines.length * 1.8), pan.w * 0.055), 10, 24);
   lines.forEach((ln, k) => {
     text(ln, pan.x + pan.w / 2, pan.y + pan.h / 2 + (k - (lines.length - 1) / 2) * fs * 1.6, k ? fs : fs * 1.3, k ? 'rgba(43,38,34,.75)' : INK);
@@ -2263,7 +2495,7 @@ function drawBar() {
     line(x, y - 5, x, y + 5);
   }
   text('0m', x0 - 20, y, fs);
-  text('1000m', x1 + 48, y, fs);
+  text(`${CONFIG.raceLength}m`, x1 + 48, y, fs);
 
   const order = [...game.players].sort((a, b) => a.wx - b.wx);
   for (const p of order) {
@@ -2308,7 +2540,7 @@ function drawCenterCall(label) {
 function drawRaceScreen() {
   drawBar();
   game.layout.panels.forEach((pan, i) => {
-    if (i >= game.count) return drawHelpCell(pan);
+    if (i >= game.humans) return drawHelpCell(pan);
     const p = game.players[i];
     rr(pan.x, pan.y, pan.w, pan.h, 12);
     ctx.fillStyle = SKY;
@@ -2324,6 +2556,24 @@ function drawRaceScreen() {
   if (game.state === 'countdown') drawCenterCall(String(Math.ceil(game.countdown)));
   else if (game.state === 'race' && game.goFlash > 0) drawCenterCall('출발!');
   else if (game.state === 'cutscene') drawCutscene();
+  if (game.banner && game.state === 'race') drawBanner(game.banner);
+}
+
+// 모든 화면 위쪽 가운데에 잠깐 뜨는 알림(레이저 폭풍)
+function drawBanner(b) {
+  const fs = clamp(Math.min(W * 0.045, H * 0.07), 18, 44);
+  const y = game.layout.barH + fs * 1.2;
+  ctx.globalAlpha = Math.min(1, (2 - b.t) / 0.3);
+  ctx.font = `${fs}px ${FONT}`;
+  const w = ctx.measureText(b.text).width + fs * 1.6;
+  rr(W / 2 - w / 2, y - fs * 0.8, w, fs * 1.6, fs * 0.4);
+  ctx.fillStyle = PAPER;
+  ctx.fill();
+  ctx.strokeStyle = b.color;
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  text(b.text, W / 2, y, fs * (1 + Math.max(0, 0.2 - b.t)), b.color, 'center', '#fff');
+  ctx.globalAlpha = 1;
 }
 
 // 로켓 컷신: 모든 화면을 덮고, 로켓을 얻은 카트가 상대 수만큼 로켓을 쏘아 올린다.

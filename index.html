@@ -24,14 +24,29 @@
   <div class="card">
     <h2>인원수를 선택하세요.</h2>
     <div id="counts" class="counts">
+      <button data-n="1">솔로</button>
       <button data-n="2">2명</button>
       <button data-n="3">3명</button>
       <button data-n="4">4명</button>
       <button data-n="5">5명</button>
       <button data-n="6">6명</button>
     </div>
+    <p class="note">솔로: 혼자서 AI 12명과 대결해요.</p>
     <p id="phoneNote" class="note hidden">휴대폰에서는 조작 공간이 좁아요. 2명을 권장해요.</p>
     <button id="btnSelect" class="big">선택</button>
+  </div>
+</section>
+
+<section id="level" class="screen clear hidden">
+  <div class="card">
+    <h2>AI 난이도를 선택하세요.</h2>
+    <div id="levels" class="courses">
+      <button data-l="easy"><span>🐢</span>쉬운 AI</button>
+      <button data-l="normal"><span>🚗</span>보통 AI</button>
+      <button data-l="hard"><span>🏎️</span>어려운 AI</button>
+      <button data-l="expert"><span>🏆</span>전문가 AI</button>
+    </div>
+    <button id="btnLevel" class="big">선택</button>
   </div>
 </section>
 
@@ -58,9 +73,11 @@
       <li><b>≫ 부스터</b>를 밟으면 빨라져요. 1등은 못 먹어요.</li>
       <li><b>✸ 공격 칸</b>을 밟고 상대 번호를 누르면 공격! 날아오는 공격은 피하세요.</li>
       <li><b>레이저 칸</b>을 밟고 발사 버튼을 누르면 내 줄을 따라 끝까지 광선이 날아가요. 맞으면 느려져요.</li>
+      <li id="modeTip" class="hidden"></li>
+      <li><b>⚡ 레이저 폭풍</b>을 밟으면 레이저가 무작위 줄로 쏟아져요! 밟은 사람은 잠시 무적이에요.</li>
       <li><b>🚀 로켓</b>을 밟으면 로켓이 상대 모두에게 날아가요! 1등은 못 먹어요.</li>
       <li id="courseTip"></li>
-      <li>1000m에 먼저 도착하면 승리!</li>
+      <li>5000m에 먼저 도착하면 승리!</li>
     </ul>
     <button id="btnGo" class="big">시작</button>
   </div>
