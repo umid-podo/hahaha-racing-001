@@ -35,15 +35,31 @@
   </div>
 </section>
 
+<section id="course" class="screen clear hidden">
+  <div class="card">
+    <h2>코스를 선택하세요.</h2>
+    <div id="courses" class="courses">
+      <button data-c="road"><span>🏁</span>레이싱</button>
+      <button data-c="jungle"><span>🐒</span>정글</button>
+      <button data-c="arctic"><span>🧊</span>북극</button>
+      <button data-c="desert"><span>🐍</span>사막</button>
+    </div>
+    <p id="courseNote" class="note"></p>
+    <button id="btnCourse" class="big">선택</button>
+  </div>
+</section>
+
 <section id="ready" class="screen hidden">
   <div class="card">
-    <h2>레이스 준비</h2>
+    <h2>레이스 준비 · <span id="courseName"></span></h2>
     <ul class="howto">
       <li>내 색깔 <b>터치 화면</b>에 손가락을 대면 동그라미가 생기고, 카트가 그곳으로 가요.</li>
       <li>모두 <b>같은 길</b>을 달려요. 아이템은 먼저 밟은 사람이 가져가요.</li>
       <li><b>≫ 부스터</b>를 밟으면 빨라져요. 1등은 못 먹어요.</li>
       <li><b>✸ 공격 칸</b>을 밟고 상대 번호를 누르면 공격! 날아오는 공격은 피하세요.</li>
       <li><b>레이저 칸</b>을 밟고 발사 버튼을 누르면 내 줄을 따라 끝까지 광선이 날아가요. 맞으면 느려져요.</li>
+      <li><b>🚀 로켓</b>을 밟으면 로켓이 상대 모두에게 날아가요! 1등은 못 먹어요.</li>
+      <li id="courseTip"></li>
       <li>1000m에 먼저 도착하면 승리!</li>
     </ul>
     <button id="btnGo" class="big">시작</button>

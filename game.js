@@ -3,13 +3,13 @@
 // 밸런스 초깃값. planning/02-game-design.md와 03-shared-track-revision.md의 제안값이며 플레이테스트로 조정한다.
 const CONFIG = {
   raceLength: 1000, // m
-  baseSpeed: 20, // m/s
+  baseSpeed: 25, // m/s
   boostMul: 1.6,
   boostTime: 2,
   slowMul: 0.6,
   slowTime: 3,
   protectTime: 1,
-  warnTime: 1 / 1.5, // 공격 발사 후 도착까지. 던지는 속도를 1.5배로 올렸다
+  warnTime: 0.25, // 공격 발사 후 도착까지. 아주 빠르게 날아간다
   laserSpeed: 150, // 레이저가 날아가는 속도 (m/s)
   laserLen: 30, // 레이저 광선 한 줄기의 길이 (m)
   winShowTime: 3,
@@ -25,6 +25,15 @@ const CONFIG = {
   camLag: 0.25, // 기본 속도 초과분 1m/s당 카메라가 뒤처지는 거리 (m)
   boostZoom: 0.08, // 부스터 때 줌아웃 비율
   volume: 0.5, // 전체 음량
+  cutShow: 1.9, // 로켓 컷신: 전체 화면 연출 시간
+  cutFly: 0.7, // 그 뒤 로켓이 각 화면의 상대에게 날아드는 시간
+  slipTime: 2, // 정글: 바나나 껍질을 밟으면 미끄러져 조작 불가
+  slipMul: 0.45,
+  freezeTime: 2, // 북극: 물웅덩이에 빠지면 얼어서 멈춤
+  dizzyTime: 4, // 사막: 뱀에 부딪히면 조작이 반대로
+  hazardSafe: 1, // 장애물 효과가 끝난 뒤 다시 걸리지 않는 시간
+  snakeSpeed: 1.25, // 뱀이 도로를 가로지르는 속도 (도로 폭/초)
+  snakeRest: 0.5, // 뱀이 도로 가장자리에서 쉬는 시간
 };
 const OFF_MAX = (CONFIG.offMax - CONFIG.offMin) * CONFIG.viewMeters;
 const LAG_MAX = (CONFIG.boostMul - 1) * CONFIG.baseSpeed * CONFIG.camLag;
@@ -37,6 +46,26 @@ const PLAYERS = [
   { name: 'Purple', color: '#8e5bd0' },
   { name: 'Orange', color: '#f08a2e' },
 ];
+
+// 코스별 색과 장애물. tip은 준비 화면, hint는 도움말 칸에 쓴다.
+const COURSES = {
+  road: {
+    name: '레이싱 코스', tip: '장애물 없이 달리는 기본 코스예요.', hint: '기본 코스: 장애물 없음',
+    sky: '#fffdf5', hill: '#e9f0d8', tree: '#d3e6b8', road: '#efe8d8', curb: '#e8433a', grass: '#5e9c43',
+  },
+  jungle: {
+    name: '정글 코스', tip: '원숭이가 바나나 껍질을 던져요. 밟으면 2초 동안 미끄러져서 조작할 수 없어요.', hint: '바나나 껍질 → 2초 미끄러짐',
+    sky: '#f4fbe8', hill: '#cfe3ae', tree: '#9fd07f', road: '#e9d9b6', curb: '#5e9c43', grass: '#3f7f2e',
+  },
+  arctic: {
+    name: '북극 코스', tip: '물웅덩이에 빠지면 2초 동안 꽁꽁 얼어서 움직일 수 없어요.', hint: '물웅덩이 → 2초 꽁꽁',
+    sky: '#f1f8ff', hill: '#f9fcff', tree: '#cfe8df', road: '#e8f2f8', curb: '#4a9be0', grass: '#8fb8cf',
+  },
+  desert: {
+    name: '사막 코스', tip: '뱀이 도로를 가로질러 돌진해요. 부딪히면 4초 동안 해롱해롱, 조작이 반대로 돼요.', hint: '뱀 → 4초 조작 반대',
+    sky: '#fff8e6', hill: '#f6e2ad', tree: '#a9d18e', road: '#f3e3bd', curb: '#e8801a', grass: '#c9a45c',
+  },
+};
 
 const INK = '#2b2622';
 const PAPER = '#fbf6e9';
@@ -51,11 +80,16 @@ let W = 0;
 let H = 0;
 
 const game = {
-  state: 'title', // title | select | ready | countdown | race | paused | win | result
+  state: 'title', // title | select | course | ready | countdown | race | cutscene | paused | win | result
   selected: 2,
   count: 2,
+  course: 'road',
   players: [],
   items: [],
+  hazards: { puddles: [], snakes: [], monkeys: [], bananas: [] },
+  hazardT: 0, // 다음 바나나를 던질 때까지
+  raceT: 0, // 경기 중에만 흐르는 시계. 뱀의 움직임에 쓴다
+  cut: null, // 로켓 컷신 { by, t }
   shots: [],
   beams: [],
   fx: [],
@@ -168,7 +202,7 @@ for (const type of ['pointerdown', 'pointerup', 'touchend']) document.addEventLi
 function updateEngine() {
   if (!ac) return;
   const racing = game.state === 'race';
-  const on = racing || game.state === 'countdown';
+  const on = racing || game.state === 'countdown' || game.state === 'cutscene';
   const mul = racing ? game.players.reduce((sum, p) => sum + p.mul, 0) / game.players.length : 0;
   const t = ac.currentTime;
   for (const o of engine.oscs) o.osc.frequency.setTargetAtTime((60 + 50 * mul) * o.ratio, t, 0.05);
@@ -234,6 +268,22 @@ const SOUNDS = {
   },
   miss: () => noise(2500, 600, 0.25, 0.5),
   bump: () => tone('sine', 180, 60, 0.12, 0.5),
+  // 로켓: 경보음 두 번과 치솟는 분사음
+  rocket: () => {
+    for (let k = 0; k < 2; k++) tone('square', 700, 1100, 0.25, 0.15, k * 0.28);
+    tone('sawtooth', 120, 900, 1.2, 0.12, 0.5);
+    noise(300, 2500, 1.3, 0.5, 0.5);
+  },
+  slip: () => {
+    tone('sine', 900, 200, 0.35, 0.3);
+    tone('sine', 600, 1200, 0.3, 0.2, 0.3);
+  },
+  freeze: () => {
+    [1568, 2093, 2637].forEach((f, k) => tone('triangle', f, f, 0.18, 0.18, k * 0.06));
+    noise(6000, 3000, 0.4, 0.3);
+  },
+  dizzy: () => [0, 0.15, 0.3].forEach((at) => tone('sine', 500, 300, 0.15, 0.25, at)),
+  toss: () => noise(800, 2000, 0.2, 0.3),
   win: () => [523, 659, 784, 1047].forEach((f, k) => tone('square', f, f, k < 3 ? 0.14 : 0.6, 0.22, k * 0.13)),
 };
 
@@ -271,7 +321,7 @@ function computeLayout() {
     const h = ch - m * 2;
     const ix = x + inner;
     const iw = w - inner * 2;
-    const driveH = (h - inner * 2) * 0.56;
+    const driveH = (h - inner * 2) * 0.6;
     const btnH = clamp(h * 0.13, 40, 64);
     const padY = y + inner + driveH + btnH + 8;
     panels.push({
@@ -288,7 +338,8 @@ function computeLayout() {
 // 앞코는 원점에서 NOSE만큼 앞이고, 출발선·결승선은 앞코가 닿는 자리에 그린다.
 const NOSE = 56;
 function kartScale(d) {
-  return Math.min((d.h * 0.34) / 136, (d.w * 0.22) / 116);
+  // 카트를 작게 그려 도로를 넓게 쓴다.
+  return Math.min((d.h * 0.28) / 136, (d.w * 0.2) / 116);
 }
 
 // 패널 i의 주행 화면 기하. 같은 경기의 패널은 크기가 같으므로 판정에는 패널 0을 쓴다.
@@ -336,10 +387,15 @@ function newRace() {
       // 트랙 위의 실제 위치. 순위·결승·아이템·공격 판정은 모두 이 값을 쓴다.
       get wx() { return this.base + this.off; },
       mul: 0, lag: 0, spin: 0, dustT: 0, row: -2, // row: 마지막으로 아이템을 얻은 줄
-      boost: 0, slow: 0, protect: 0, hitFx: 0, attack: false, laser: false, touch: null,
+      boost: 0, slow: 0, protect: 0, hitFx: 0, attack: false, laser: false, touch: null, aim: null,
+      slip: 0, slipDir: 1, freeze: 0, dizzy: 0, safe: 0, // 코스 장애물 상태
     };
   });
   game.items = makeItems(game.count);
+  game.hazards = makeHazards(game.items, game.count);
+  game.hazardT = 1.5;
+  game.raceT = 0;
+  game.cut = null;
   game.shots = [];
   game.beams = [];
   game.fx = [];
@@ -367,7 +423,56 @@ function makeItems(n) {
     });
     wx += 45 + Math.random() * 30;
   }
+  // 특별 아이템 로켓: 경기 중간(500m 근처) 두 줄 사이에 하나만 놓는다.
+  const xs = rowXs(items);
+  let k = 0;
+  for (let j = 1; j < xs.length - 1; j++) if (Math.abs((xs[j] + xs[j + 1]) / 2 - 500) < Math.abs((xs[k] + xs[k + 1]) / 2 - 500)) k = j;
+  items.push({ wx: (xs[k] + xs[k + 1]) / 2, lat: 0.3 + Math.random() * 0.4, type: 'rocket', row: -1, takenBy: null });
   return items;
+}
+
+// 아이템 줄들의 위치(m). 로켓은 줄에 속하지 않는다.
+function rowXs(items) {
+  return [...new Set(items.filter((i) => i.type !== 'rocket').map((i) => i.wx))].sort((a, b) => a - b);
+}
+
+// 코스 장애물. 물웅덩이와 뱀은 아이템 줄 사이에 놓아 아이템과 겹치지 않게 한다.
+function makeHazards(items, n) {
+  const hz = { puddles: [], snakes: [], monkeys: [], bananas: [] };
+  const xs = rowXs(items);
+  const rocket = items.find((i) => i.type === 'rocket');
+  const spots = [60];
+  for (let k = 0; k + 1 < xs.length; k++) spots.push((xs[k] + xs[k + 1]) / 2);
+  spots.push((xs[xs.length - 1] + CONFIG.raceLength) / 2);
+  const free = spots.filter((x) => !rocket || Math.abs(x - rocket.wx) > 5);
+  if (game.course === 'arctic') {
+    const per = n <= 3 ? 1 : 2;
+    for (const x of free) {
+      for (let c = 0; c < per; c++) {
+        const lat = per === 1 ? 0.2 + Math.random() * 0.6 : (c + 0.3 + Math.random() * 0.4) / per;
+        hz.puddles.push({ wx: x + (Math.random() - 0.5) * 8, lat: clamp(lat, 0.12, 0.88), len: 8 + Math.random() * 3, hl: 0.07 });
+      }
+    }
+  } else if (game.course === 'desert') {
+    const period = 2 * (1 / CONFIG.snakeSpeed + CONFIG.snakeRest);
+    for (const x of free) hz.snakes.push({ wx: x + (Math.random() - 0.5) * 8, phase: Math.random() * period });
+  } else if (game.course === 'jungle') {
+    for (let x = 40 + Math.random() * 10; x < CONFIG.raceLength - 20; x += 26 + Math.random() * 14) hz.monkeys.push({ wx: x, tossAt: -9 });
+  }
+  return hz;
+}
+
+// 뱀은 도로 위쪽 밖(lo)과 아래쪽 밖(hi) 사이를 쉬었다 돌진하기를 되풀이한다. dir은 머리 방향(+1 아래, -1 위)이다.
+function snakePos(sn) {
+  const lo = -0.1;
+  const hi = 1.1;
+  const run = 1 / CONFIG.snakeSpeed;
+  const rest = CONFIG.snakeRest;
+  const u = (game.raceT + sn.phase) % (2 * (run + rest));
+  if (u < rest) return { lat: lo, dir: 1, moving: false };
+  if (u < rest + run) return { lat: lo + (hi - lo) * ((u - rest) / run), dir: 1, moving: true };
+  if (u < rest * 2 + run) return { lat: hi, dir: -1, moving: false };
+  return { lat: hi - (hi - lo) * ((u - rest * 2 - run) / run), dir: -1, moving: true };
 }
 
 function startCountdown() {
@@ -410,6 +515,8 @@ function update(dt) {
     }
   } else if (game.state === 'race') {
     updateRace(dt);
+  } else if (game.state === 'cutscene') {
+    updateCutscene(dt);
   } else if (game.state === 'win') {
     game.winTimer -= dt;
     if (game.winTimer <= 0) showResult();
@@ -433,6 +540,8 @@ function moveKarts(dt, fwd) {
   const offStep = CONFIG.offSpeed * dt;
   const latStep = ((CONFIG.kartSpeed * v.d.w) / v.rh) * dt;
   for (const p of game.players) {
+    // 미끄러지거나 얼어 있으면 조작이 먹히지 않는다.
+    if (p.slip > 0 || p.freeze > 0) continue;
     if (fwd) p.off += clamp(p.tOff - p.off, -offStep, offStep);
     p.lat += clamp(p.tLat - p.lat, -latStep, latStep);
   }
@@ -475,6 +584,7 @@ function bumpKarts(v) {
 
 function updateRace(dt) {
   game.goFlash = Math.max(0, game.goFlash - dt);
+  game.raceT += dt;
   moveKarts(dt, true);
 
   const v = view();
@@ -482,7 +592,8 @@ function updateRace(dt) {
   for (const p of game.players) {
     // 따라잡기 보정: 선두와 멀수록 조금 빨라진다.
     const catchUp = Math.min(CONFIG.catchMax, Math.floor((lead - p.wx) / CONFIG.catchStep) * CONFIG.catchGain);
-    const target = (p.boost > 0 ? CONFIG.boostMul : 1) * (p.slow > 0 ? CONFIG.slowMul : 1) * (1 + catchUp);
+    const target = p.freeze > 0 ? 0
+      : (p.boost > 0 ? CONFIG.boostMul : 1) * (p.slow > 0 ? CONFIG.slowMul : 1) * (p.slip > 0 ? CONFIG.slipMul : 1) * (1 + catchUp);
     p.mul += clamp(target - p.mul, -CONFIG.accel * dt, CONFIG.accel * dt);
     p.base += CONFIG.baseSpeed * p.mul * dt;
     // 빨라지면 카메라가 늦게 따라와 카트가 화면 앞쪽으로 튀어나간다.
@@ -492,6 +603,13 @@ function updateRace(dt) {
     p.slow = Math.max(0, p.slow - dt);
     p.protect = Math.max(0, p.protect - dt);
     p.hitFx = Math.max(0, p.hitFx - dt);
+    p.slip = Math.max(0, p.slip - dt);
+    p.freeze = Math.max(0, p.freeze - dt);
+    p.safe = Math.max(0, p.safe - dt);
+    if (p.dizzy > 0) {
+      p.dizzy = Math.max(0, p.dizzy - dt);
+      if (p.dizzy === 0) resteer(p); // 해롱해롱이 풀리면 손가락 위치대로 다시 조향한다
+    }
 
     p.dustT -= p.mul * dt;
     if (p.dustT <= 0) {
@@ -500,6 +618,8 @@ function updateRace(dt) {
     }
   }
   takeItems(v);
+  if (game.state === 'cutscene') return; // 로켓을 얻으면 경기를 멈추고 컷신으로 넘어간다
+  updateHazards(dt, v);
   updateBeams(dt, v);
 
   for (const s of game.shots) s.t += dt;
@@ -519,6 +639,7 @@ function updateRace(dt) {
 // 그 줄의 다른 칸과 바로 다음 줄을 얻지 못한다. 1등은 부스터를 먹지 못한다.
 // 무기(공격·레이저)는 하나만 가질 수 있어서, 무기를 가진 카트는 무기 칸을 소비하지 않고 지나간다.
 function canTake(p, item) {
+  if (item.type === 'rocket') return rankOf(p) > 1;
   if (item.row <= p.row + 1) return false;
   if (item.type === 'boost') return rankOf(p) > 1;
   return !p.attack && !p.laser;
@@ -545,13 +666,96 @@ function takeItems(v) {
     }
     if (!best) continue;
     item.takenBy = best.i;
+    game.fx.push({ kind: 'pick', wx: item.wx, lat: item.lat, by: best.i, t: 0 });
+    sfx(item.type);
+    if (item.type === 'rocket') return startCutscene(best);
     best.row = item.row;
     if (item.type === 'boost') best.boost = CONFIG.boostTime;
     else best[item.type] = true;
-    game.fx.push({ kind: 'pick', wx: item.wx, lat: item.lat, by: best.i, t: 0 });
-    sfx(item.type);
   }
 }
+
+// ---------- 로켓 컷신 ----------
+
+// 모든 화면을 덮는 컷신 동안 경기는 멈춘다. 끝나면 로켓이 상대 전원에게 떨어진다.
+function startCutscene(p) {
+  game.state = 'cutscene';
+  game.cut = { by: p.i, t: 0 };
+}
+
+function updateCutscene(dt) {
+  game.cut.t += dt;
+  for (const f of game.fx) f.t += dt;
+  game.fx = game.fx.filter((f) => f.t < 0.5);
+  if (game.cut.t < CONFIG.cutShow + CONFIG.cutFly) return;
+  // 로켓은 보호 중이어도 반드시 맞는다.
+  for (const p of game.players) {
+    if (p.i === game.cut.by) continue;
+    p.slow = CONFIG.slowTime;
+    p.protect = CONFIG.protectTime;
+    p.hitFx = 0.6;
+    game.fx.push({ kind: 'hit', to: p.i, u: p.off, lat: p.lat, t: 0 });
+  }
+  sfx('hit');
+  game.cut = null;
+  game.state = 'race';
+}
+
+// ---------- 코스 장애물 ----------
+
+const HAZARD_TIME = { slip: 'slipTime', freeze: 'freezeTime', dizzy: 'dizzyTime' };
+const HAZARD_TEXT = { slip: '미끌!', freeze: '꽁꽁!', dizzy: '해롱~' };
+
+function applyHazard(p, kind) {
+  if (p.safe > 0) return false;
+  const time = CONFIG[HAZARD_TIME[kind]];
+  p[kind] = time;
+  p.safe = time + CONFIG.hazardSafe;
+  if (kind === 'freeze') p.mul = 0;
+  if (kind === 'slip') p.slipDir = Math.random() < 0.5 ? -1 : 1;
+  if (kind === 'dizzy') resteer(p);
+  game.fx.push({ kind, to: p.i, u: p.off, lat: p.lat, t: 0 });
+  sfx(kind);
+  return true;
+}
+
+function updateHazards(dt, v) {
+  const hz = game.hazards;
+  const kartX = (40 * v.s) / v.ppm;
+  const kartLat = (16 * v.s) / v.rh;
+  for (const p of game.players) {
+    for (const pd of hz.puddles) {
+      if (Math.abs(p.wx - pd.wx) < pd.len / 2 && Math.abs(p.lat - pd.lat) < pd.hl) applyHazard(p, 'freeze');
+    }
+    for (const sn of hz.snakes) {
+      if (Math.abs(p.wx - sn.wx) < kartX && Math.abs(p.lat - snakePos(sn).lat) < kartLat + 0.06) applyHazard(p, 'dizzy');
+    }
+    for (const b of hz.bananas) {
+      if (b.t < BANANA_FLY || b.gone) continue;
+      if (Math.abs(p.wx - b.wx) < kartX && Math.abs(p.lat - b.lat) < kartLat) b.gone = applyHazard(p, 'slip');
+    }
+  }
+
+  // 정글: 원숭이가 가끔 어떤 카트 앞쪽 도로에 바나나 껍질을 던진다.
+  if (hz.monkeys.length) {
+    game.hazardT -= dt;
+    if (game.hazardT <= 0) {
+      game.hazardT = (2.4 + Math.random() * 2.4) / game.count;
+      const p = game.players[Math.floor(Math.random() * game.count)];
+      const near = hz.monkeys.filter((m) => m.wx > p.wx + 14 && m.wx < p.wx + 45); // 원숭이 간격(최대 40m)보다 넓게 찾는다
+      const m = near[Math.floor(Math.random() * near.length)];
+      if (m) {
+        m.tossAt = game.time;
+        hz.bananas.push({ from: m.wx, wx: m.wx + (Math.random() - 0.5) * 4, lat: clamp(p.lat + (Math.random() - 0.5) * 0.5, 0.08, 0.92), t: 0, gone: false });
+        sfx('toss');
+      }
+    }
+  }
+  const tail = Math.min(...game.players.map((p) => p.wx)) - 40;
+  for (const b of hz.bananas) b.t += dt;
+  hz.bananas = hz.bananas.filter((b) => !b.gone && b.wx > tail);
+}
+const BANANA_FLY = 0.6; // 바나나 껍질이 날아가 도로에 떨어지기까지
 
 // 비추적 공격. 대상이 계속 전진하므로 예상 위치는 대상의 base에 상대적인 값(off, lat)으로 기록한다.
 function fire(p, target) {
@@ -630,7 +834,7 @@ function finish(winners) {
 
 // ---------- 화면 전환 ----------
 
-const SCREENS = ['title', 'select', 'ready', 'pause', 'result', 'confirm'];
+const SCREENS = ['title', 'select', 'course', 'ready', 'pause', 'result', 'confirm'];
 let confirmBack = null;
 
 function show(id) {
@@ -649,6 +853,11 @@ function updateSelect() {
   for (const b of $('counts').children) b.classList.toggle('on', Number(b.dataset.n) === game.selected);
   const small = Math.min(window.innerWidth, window.innerHeight) < 500;
   $('phoneNote').classList.toggle('hidden', !(small && game.selected >= 3));
+}
+
+function updateCourse() {
+  for (const b of $('courses').children) b.classList.toggle('on', b.dataset.c === game.course);
+  $('courseNote').textContent = COURSES[game.course].tip;
 }
 
 function showResult() {
@@ -691,8 +900,27 @@ tap('btnSelect', () => {
   if (game.state !== 'select') return;
   game.count = game.selected;
   game.wins = Array(game.count).fill(0);
+  game.state = 'course';
+  updateCourse();
+  show('course');
+});
+
+// 코스를 누르면 타이틀 배경이 그 코스로 바뀐다.
+for (const b of $('courses').children) {
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    sfx('tap');
+    game.course = b.dataset.c;
+    updateCourse();
+  });
+}
+
+tap('btnCourse', () => {
+  if (game.state !== 'course') return;
   newRace();
   game.state = 'ready';
+  $('courseName').textContent = COURSES[game.course].name;
+  $('courseTip').textContent = COURSES[game.course].tip;
   show('ready');
 });
 
@@ -729,11 +957,21 @@ function pointerPos(e) {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+// 해롱해롱(뱀)일 때는 앞뒤와 좌우가 모두 반대로 간다.
 function steer(p, pad, x, y) {
   const inr = padInner(pad);
-  p.tOff = clamp((x - inr.x) / inr.w, 0, 1) * OFF_MAX;
-  p.tLat = clamp((y - inr.y) / inr.h, 0, 1);
+  const u = clamp((x - inr.x) / inr.w, 0, 1);
+  const w = clamp((y - inr.y) / inr.h, 0, 1);
+  const flip = p.dizzy > 0;
+  p.tOff = (flip ? 1 - u : u) * OFF_MAX;
+  p.tLat = flip ? 1 - w : w;
+  p.aim = { x, y };
   p.touch = { u: clamp((x - pad.x) / pad.w, 0, 1), v: clamp((y - pad.y) / pad.h, 0, 1) };
+}
+
+// 손가락을 대고 있는 채로 해롱해롱이 걸리거나 풀리면 목표를 바로 다시 계산한다.
+function resteer(p) {
+  if (p.touch && p.aim) steer(p, game.layout.panels[p.i].pad, p.aim.x, p.aim.y);
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -820,18 +1058,22 @@ function hand(x, y, r) {
   ctx.stroke();
 }
 
-// 얼굴: ∧ ∧ 눈과 ω 입. 슬프면 물결 입과 눈물. fx는 얼굴 중심 x, hy는 머리 중심 y다.
-function drawFace(fx, hy, sad) {
+// 얼굴: ∧ ∧ 눈과 ω 입. 슬프면 물결 입과 눈물, 어지러우면 소용돌이 눈. fx는 얼굴 중심 x, hy는 머리 중심 y다.
+function drawFace(fx, hy, sad, dizzy) {
   const t = game.time;
   ctx.lineWidth = 2.5;
   for (const ex of [fx - 8, fx + 10]) {
     ctx.beginPath();
-    ctx.moveTo(ex - 5, hy + 1);
-    ctx.lineTo(ex, hy - 9);
-    ctx.lineTo(ex + 5, hy + 1);
+    if (dizzy) {
+      for (let a = 0; a < Math.PI * 4; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 8) * a * 0.55, hy - 4 + Math.sin(a + t * 8) * a * 0.55);
+    } else {
+      ctx.moveTo(ex - 5, hy + 1);
+      ctx.lineTo(ex, hy - 9);
+      ctx.lineTo(ex + 5, hy + 1);
+    }
     ctx.stroke();
   }
-  if (sad) {
+  if (sad || dizzy) {
     ctx.beginPath();
     ctx.moveTo(fx - 4, hy + 13);
     ctx.quadraticCurveTo(fx - 1, hy + 8, fx + 2, hy + 12);
@@ -864,6 +1106,14 @@ function drawKart(x, y, s, color, pose, o = {}) {
   // 부스터 때 앞으로 기울고 감속 때 뒤로 처진다.
   if (moving) ctx.rotate(clamp((mul - 1) * 0.12, -0.06, 0.08));
   if (o.wobble) ctx.rotate(Math.sin(t * 30) * 0.14 * o.wobble);
+  if (o.dizzy) ctx.rotate(Math.sin(t * 6) * 0.1);
+  // 바나나에 미끄러지면 제자리에서 빙글빙글 돈다. 옆모습이므로 좌우를 뒤집어 도는 것처럼 보인다.
+  if (o.slip) {
+    ctx.translate(0, -50);
+    ctx.scale(Math.cos(o.slip * Math.PI * 3), 1);
+    ctx.rotate(Math.sin(o.slip * Math.PI * 6) * 0.15);
+    ctx.translate(0, 50);
+  }
   if (o.blink) ctx.globalAlpha = 0.65 + 0.35 * Math.sin(t * 40);
   ctx.lineWidth = 3;
   ctx.lineJoin = ctx.lineCap = 'round';
@@ -963,7 +1213,7 @@ function drawKart(x, y, s, color, pose, o = {}) {
   ctx.fill();
   ctx.stroke();
 
-  drawFace(hx + 5, hy, pose === 'lose');
+  drawFace(hx + 5, hy, pose === 'lose', o.dizzy);
 
   // 팔과 손
   ctx.lineWidth = 3;
@@ -1007,15 +1257,30 @@ function drawKart(x, y, s, color, pose, o = {}) {
     ctx.strokeStyle = INK;
   }
 
-  if (o.slow) {
-    ctx.fillStyle = '#ffd84a';
+  if (o.slow || o.dizzy) {
+    ctx.fillStyle = o.dizzy ? '#c89bff' : '#ffd84a';
     ctx.lineWidth = 2;
     for (let k = 0; k < 3; k++) {
-      const a = t * 5 + (k * Math.PI * 2) / 3;
+      const a = t * (o.dizzy ? 9 : 5) + (k * Math.PI * 2) / 3;
       spiky(hx + Math.cos(a) * 24, hy - 30 + Math.sin(a) * 6, 7, 3, 5, a);
       ctx.fill();
       ctx.stroke();
     }
+  }
+  // 얼음 덩어리에 갇힌 모습
+  if (o.frozen) {
+    ctx.globalAlpha = 0.55;
+    rr(-64, hy - 36, 128, 38 - hy, 10);
+    ctx.fillStyle = '#bfe3ff';
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#4a9be0';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,.9)';
+    ctx.lineWidth = 4;
+    line(-50, hy - 20, -34, hy - 4);
+    line(-50, hy, -44, hy + 6);
   }
   ctx.restore();
 }
@@ -1098,14 +1363,29 @@ function eachTile(d, scroll, gap, fn) {
   for (let k = Math.floor((scroll - m) / gap); k * gap - scroll < d.w + m; k++) fn(d.x + k * gap - scroll, k);
 }
 
-// 하늘(구름 ×0.1, 언덕·나무 ×0.5)과 도로(×1). cam은 카메라의 트랙 위 위치(m)다.
+// 하늘(구름 ×0.1, 언덕·나무 ×0.5)과 도로(×1). cam은 카메라의 트랙 위 위치(m)다. 색과 모양은 코스를 따른다.
 function drawRoad(d, s, roadTop, ppm, cam) {
+  const T = COURSES[game.course];
+  const course = game.course;
   const x0 = d.x - d.w * 0.1;
   const x1 = d.x + d.w * 1.1;
   const bottom = d.y + d.h;
   const px = cam * ppm;
-  ctx.fillStyle = SKY;
+  ctx.fillStyle = T.sky;
   ctx.fillRect(x0, d.y - d.h * 0.1, x1 - x0, d.h * 1.1);
+
+  if (course === 'desert') {
+    // 뜨거운 해
+    const sx = d.x + d.w * 0.82;
+    const sy = d.y + 34 * s;
+    spiky(sx, sy, 30 * s, 20 * s, 12, game.time * 0.3);
+    ctx.fillStyle = '#ffe9a3';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(sx, sy, 17 * s, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffd24a';
+    ctx.fill();
+  }
 
   ctx.strokeStyle = 'rgba(43,38,34,.3)';
   ctx.lineWidth = Math.max(1, 2 * s);
@@ -1119,33 +1399,94 @@ function drawRoad(d, s, roadTop, ppm, cam) {
     ctx.stroke();
   });
 
+  // 먼 풍경: 언덕 / 정글 수풀 / 눈 덮인 산 / 모래 언덕
   ctx.strokeStyle = 'rgba(43,38,34,.45)';
-  ctx.fillStyle = '#e9f0d8';
+  ctx.fillStyle = T.hill;
   eachTile(d, px * 0.5, 240 * s, (x, k) => {
+    const w = (120 + rnd(k) * 70) * s;
+    const h = (24 + rnd(k + 0.5) * 22) * s;
     ctx.beginPath();
-    ctx.ellipse(x, roadTop, (120 + rnd(k) * 70) * s, (24 + rnd(k + 0.5) * 22) * s, 0, Math.PI, Math.PI * 2);
+    if (course === 'arctic') {
+      ctx.moveTo(x - w, roadTop);
+      ctx.lineTo(x, roadTop - h * 1.9);
+      ctx.lineTo(x + w, roadTop);
+    } else {
+      ctx.ellipse(x, roadTop, w, course === 'jungle' ? h * 1.5 : h, 0, Math.PI, Math.PI * 2);
+    }
     ctx.fill();
     ctx.stroke();
   });
-  ctx.fillStyle = '#d3e6b8';
+
+  // 가까운 풍경: 나무 / 야자수 / 눈 쌓인 전나무 / 선인장
+  ctx.fillStyle = T.tree;
   eachTile(d, px * 0.5, 150 * s, (x, k) => {
     if (rnd(k * 1.7) < 0.35) return;
     const h = (24 + rnd(k * 2.3) * 14) * s;
-    line(x, roadTop, x, roadTop - h);
-    ctx.beginPath();
-    ctx.arc(x, roadTop - h - 10 * s, 14 * s, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    ctx.fillStyle = T.tree;
+    if (course === 'jungle') {
+      line(x, roadTop, x + 6 * s, roadTop - h * 1.6);
+      for (const a of [-2.6, -2, -1.2, -0.5]) {
+        ctx.beginPath();
+        ctx.ellipse(x + 6 * s + Math.cos(a) * 14 * s, roadTop - h * 1.6 + Math.sin(a) * 6 * s, 16 * s, 6 * s, a + Math.PI / 2 + 1.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else if (course === 'arctic') {
+      for (let k2 = 0; k2 < 3; k2++) {
+        const ty = roadTop - k2 * h * 0.45;
+        const tw = (18 - k2 * 4) * s;
+        ctx.beginPath();
+        ctx.moveTo(x - tw, ty);
+        ctx.lineTo(x, ty - h * 0.7);
+        ctx.lineTo(x + tw, ty);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else if (course === 'desert') {
+      rr(x - 6 * s, roadTop - h * 1.3, 12 * s, h * 1.3, 6 * s);
+      ctx.fill();
+      ctx.stroke();
+      for (const side of [-1, 1]) {
+        const ay = roadTop - h * (side < 0 ? 0.7 : 0.9);
+        ctx.beginPath();
+        ctx.moveTo(x + side * 6 * s, ay);
+        ctx.lineTo(x + side * 14 * s, ay);
+        ctx.lineTo(x + side * 14 * s, ay - 12 * s);
+        ctx.stroke();
+      }
+    } else {
+      line(x, roadTop, x, roadTop - h);
+      ctx.beginPath();
+      ctx.arc(x, roadTop - h - 10 * s, 14 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   });
 
-  ctx.fillStyle = ROAD;
+  if (course === 'arctic') {
+    // 내리는 눈
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(74,155,224,.6)';
+    ctx.lineWidth = 1;
+    eachTile(d, px * 0.3, 55 * s, (x, k) => {
+      const fall = roadTop - d.y;
+      const y = d.y + ((game.time * 30 * s + rnd(k) * fall) % fall);
+      ctx.beginPath();
+      ctx.arc(x + Math.sin(game.time * 2 + k) * 6 * s, y, 3 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+
+  ctx.fillStyle = T.road;
   ctx.fillRect(x0, roadTop, x1 - x0, bottom - roadTop);
 
-  // 연석: 빨강·흰색 줄무늬가 속도를 가장 잘 보여준다.
+  // 연석: 줄무늬가 속도를 가장 잘 보여준다.
   const curb = 9 * s;
   ctx.fillStyle = '#fff';
   ctx.fillRect(x0, roadTop, x1 - x0, curb);
-  ctx.fillStyle = '#e8433a';
+  ctx.fillStyle = T.curb;
   eachTile(d, px, 4 * ppm, (x) => ctx.fillRect(x, roadTop, 2 * ppm, curb));
   ctx.strokeStyle = INK;
   ctx.lineWidth = Math.max(1.5, 2.5 * s);
@@ -1156,8 +1497,8 @@ function drawRoad(d, s, roadTop, ppm, cam) {
   ctx.lineWidth = Math.max(1.5, 3 * s);
   ctx.setLineDash([2 * ppm, 2 * ppm]);
   ctx.lineDashOffset = (px - d.w * 0.1) % (4 * ppm);
-  for (let k = 1; k <= 2; k++) {
-    const y = roadTop + curb + ((bottom - roadTop - curb) * k) / 3;
+  for (let k = 1; k <= 3; k++) {
+    const y = roadTop + curb + ((bottom - roadTop - curb) * k) / 4;
     line(x0, y, x1, y);
   }
   ctx.setLineDash([]);
@@ -1173,7 +1514,7 @@ function drawForeground(d, s, ppm, cam) {
     ctx.fillStyle = '#e6d5ac';
     ctx.fillRect(x - 4 * s, bottom - 15 * s, 8 * s, 17 * s);
     ctx.strokeRect(x - 4 * s, bottom - 15 * s, 8 * s, 17 * s);
-    ctx.strokeStyle = '#5e9c43';
+    ctx.strokeStyle = COURSES[game.course].grass;
     const gx = x + 75 * s;
     for (const a of [-6, 0, 6]) line(gx, bottom, gx + a * s, bottom - (a ? 10 : 14) * s);
     ctx.strokeStyle = INK;
@@ -1188,9 +1529,19 @@ function drawItem(type, x, y, s) {
   ctx.strokeStyle = INK;
   ctx.lineJoin = 'round';
   rr(-26, -26, 52, 52, 8);
-  ctx.fillStyle = { boost: '#ffe9a3', attack: '#ffc9c2', laser: '#c9e8ff' }[type];
+  ctx.fillStyle = { boost: '#ffe9a3', attack: '#ffc9c2', laser: '#c9e8ff', rocket: '#ffe27a' }[type];
   ctx.fill();
   ctx.stroke();
+  if (type === 'rocket') {
+    // 반짝이는 특별 칸. 로켓은 칸 위에 떠 있다.
+    ctx.strokeStyle = '#e8433a';
+    ctx.lineWidth = 3 + Math.sin(game.time * 10) * 2;
+    rr(-32, -32, 64, 64, 10);
+    ctx.stroke();
+    ctx.restore();
+    drawRocket(x, y - (22 + Math.sin(game.time * 5) * 4) * s, s * 0.7, -Math.PI / 2, '#e8433a');
+    return;
+  }
   if (type === 'laser') {
     // 광선 두 줄이 별에 부딪히는 모양
     ctx.strokeStyle = '#2f7be0';
@@ -1218,6 +1569,216 @@ function drawItem(type, x, y, s) {
     ctx.fillStyle = '#e8433a';
     ctx.fill();
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// 로켓. (x, y)가 몸통 중심이고 ang 방향으로 날아간다. 길이 약 90 단위다.
+function drawRocket(x, y, s, ang, color, label) {
+  const t = game.time;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.scale(s, s);
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = INK;
+  const f = Math.sin(t * 50) * 6;
+  ctx.fillStyle = '#f6a21e';
+  ctx.beginPath();
+  ctx.moveTo(-34, -9);
+  ctx.lineTo(-62 - f, 0);
+  ctx.lineTo(-34, 9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#ffe066';
+  ctx.beginPath();
+  ctx.moveTo(-34, -5);
+  ctx.lineTo(-48 - f * 0.6, 0);
+  ctx.lineTo(-34, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = color;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(-22, side * 10);
+    ctx.lineTo(-38, side * 24);
+    ctx.lineTo(-36, side * 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(-36, -12);
+  ctx.lineTo(16, -12);
+  ctx.quadraticCurveTo(40, -10, 44, 0);
+  ctx.quadraticCurveTo(40, 10, 16, 12);
+  ctx.lineTo(-36, 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(18, -12);
+  ctx.quadraticCurveTo(40, -10, 44, 0);
+  ctx.quadraticCurveTo(40, 10, 18, 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  if (label) {
+    ctx.rotate(Math.abs(ang) > Math.PI / 2 ? Math.PI : 0);
+    text(label, -8, 1, 18, color, 'center', '#fff');
+  }
+  ctx.restore();
+}
+
+// 원숭이. 원점은 발 아래 중앙이다. 던지는 중이면 한 팔을 번쩍 든다.
+function drawMonkey(x, y, s, tossing) {
+  const t = game.time;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = ctx.lineCap = 'round';
+  ctx.strokeStyle = INK;
+  ctx.fillStyle = '#9b6b43';
+  ctx.beginPath();
+  ctx.moveTo(14, -10);
+  ctx.bezierCurveTo(34, -10, 34, -34, 24, -38);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(0, -16, 14, 16, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  const ay = tossing ? -64 : -24 + Math.sin(t * 4) * 2;
+  ctx.beginPath();
+  ctx.moveTo(-10, -22);
+  ctx.lineTo(-18, ay);
+  ctx.stroke();
+  for (const ex of [-17, 17]) {
+    ctx.beginPath();
+    ctx.arc(ex, -44, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(0, -42, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#f2d3a6';
+  ctx.beginPath();
+  ctx.ellipse(0, -39, 10, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = INK;
+  for (const ex of [-4, 4]) {
+    ctx.beginPath();
+    ctx.arc(ex, -43, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.arc(0, -37, 3.5, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// 도로 위 바나나 껍질. 원점은 바닥 중앙이다.
+function drawBanana(x, y, s, rot = 0) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(s, s);
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = INK;
+  ctx.fillStyle = '#ffd84a';
+  for (const a of [-0.9, 0, 0.9]) {
+    ctx.save();
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(-5, 0);
+    ctx.quadraticCurveTo(-8, -14, 0, -22);
+    ctx.quadraticCurveTo(8, -14, 5, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle = '#8a6a2a';
+  ctx.fillRect(-3, -4, 6, 5);
+  ctx.restore();
+}
+
+// 물웅덩이. rx·ry는 화면 픽셀 반지름이다.
+function drawPuddle(x, y, rx, ry, s) {
+  ctx.lineWidth = Math.max(1.5, 2.5 * s);
+  ctx.strokeStyle = INK;
+  ctx.fillStyle = '#6cb8ec';
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.8)';
+  ctx.lineWidth = Math.max(1, 2 * s);
+  const q = (game.time * 0.8) % 1;
+  ctx.globalAlpha = 1 - q;
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx * (0.2 + q * 0.6), ry * (0.2 + q * 0.6), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.ellipse(x - rx * 0.4, y - ry * 0.35, rx * 0.25, ry * 0.18, 0, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.stroke();
+}
+
+// 뱀. (x, y)는 머리이고 몸은 dir 반대쪽(세로)으로 꿈틀대며 이어진다.
+function drawSnake(x, y, s, dir, moving) {
+  const t = game.time;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.lineJoin = ctx.lineCap = 'round';
+  const wig = moving ? 14 : 6;
+  const pts = [];
+  for (let k = 0; k <= 12; k++) pts.push([Math.sin(k * 0.9 - t * (moving ? 18 : 5)) * wig * (k / 12 + 0.2), -dir * k * 6]);
+  const body = () => {
+    ctx.beginPath();
+    pts.forEach(([px, py], k) => (k ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+  };
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 17;
+  body();
+  ctx.stroke();
+  ctx.strokeStyle = '#7cb342';
+  ctx.lineWidth = 12;
+  body();
+  ctx.stroke();
+  ctx.strokeStyle = '#c5e1a5';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([4, 8]);
+  body();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // 머리와 혀
+  ctx.strokeStyle = '#e8433a';
+  ctx.lineWidth = 2;
+  if (Math.sin(t * 12) > 0) {
+    line(0, dir * 10, -3, dir * 18);
+    line(0, dir * 10, 3, dir * 18);
+  }
+  ctx.fillStyle = '#7cb342';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.ellipse(0, dir * 2, 11, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = INK;
+  for (const ex of [-5, 5]) {
+    ctx.beginPath();
+    ctx.arc(ex, dir * 4, 2, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -1285,6 +1846,24 @@ function drawDrive(d, me) {
     drawSign(gx + q, roadTop, s, 'GOAL', '#ffe27a');
   }
 
+  // 코스 장애물: 길가의 원숭이, 도로 위의 물웅덩이·바나나 껍질·뱀
+  const hz = game.hazards;
+  for (const m of hz.monkeys) {
+    if (onScreen(xOf(m.wx))) drawMonkey(xOf(m.wx), roadTop + 4 * s, s * 0.9, game.time - m.tossAt < 0.35);
+  }
+  for (const pd of hz.puddles) {
+    if (onScreen(xOf(pd.wx))) drawPuddle(xOf(pd.wx), yOf(pd.lat), (pd.len / 2) * ppm, pd.hl * rh, s);
+  }
+  for (const b of hz.bananas) {
+    if (b.t >= BANANA_FLY && onScreen(xOf(b.wx))) drawBanana(xOf(b.wx), yOf(b.lat), s);
+  }
+  for (const sn of hz.snakes) {
+    const x = xOf(sn.wx);
+    if (!onScreen(x)) continue;
+    const sp = snakePos(sn);
+    drawSnake(x, yOf(sp.lat), s, sp.dir, sp.moving);
+  }
+
   for (const item of game.items) {
     if (item.takenBy !== null) continue;
     const ix = xOf(item.wx);
@@ -1346,7 +1925,32 @@ function drawDrive(d, me) {
     drawKart(k.x, k.y, s, PLAYERS[q.i].color, pose, {
       boost: q.boost > 0, slow: q.slow > 0, wobble: q.hitFx / 0.6, blink: q.protect > 0,
       mul: q.mul, spin: q.spin, tag: q.i + 1, me: q === me,
+      slip: q.slip > 0 && CONFIG.slipTime - q.slip, frozen: q.freeze > 0, dizzy: q.dizzy > 0,
     });
+  }
+
+  // 원숭이가 던진 바나나 껍질이 포물선을 그리며 날아간다.
+  for (const b of hz.bananas) {
+    if (b.t >= BANANA_FLY) continue;
+    const q = b.t / BANANA_FLY;
+    const x = xOf(b.from + (b.wx - b.from) * q);
+    const y = roadTop - 40 * s + (yOf(b.lat) - roadTop + 40 * s) * q - Math.sin(q * Math.PI) * 70 * s;
+    if (onScreen(x)) drawBanana(x, y, s, b.t * 14);
+  }
+
+  // 컷신 끝무렵 로켓이 이 화면에 보이는 상대 카트마다 위에서 내리꽂힌다.
+  if (game.cut && game.cut.t > CONFIG.cutShow) {
+    const q = Math.min(1, (game.cut.t - CONFIG.cutShow) / CONFIG.cutFly) ** 2;
+    for (const p of game.players) {
+      if (p.i === game.cut.by) continue;
+      const k = kartPx(me, p);
+      if (!onScreen(k.x)) continue;
+      const tx = k.x;
+      const ty = k.y - 60 * s;
+      const fx0 = tx - d.w * 0.45;
+      const fy0 = d.y - 60 * s;
+      drawRocket(fx0 + (tx - fx0) * q, fy0 + (ty - fy0) * q, s * 0.9, Math.atan2(ty - fy0, tx - fx0), PLAYERS[game.cut.by].color, String(p.i + 1));
+    }
   }
 
   for (const sh of game.shots) {
@@ -1397,6 +2001,8 @@ function drawDrive(d, me) {
       text('쾅!', ix, iy, 28 * s, '#e8433a');
     } else if (f.kind === 'miss') {
       text('휙~', ix, iy - f.t * 40 * s, 24 * s, 'rgba(43,38,34,.7)');
+    } else if (HAZARD_TEXT[f.kind]) {
+      text(HAZARD_TEXT[f.kind], ix, iy - 30 * s - f.t * 40 * s, 26 * s, { slip: '#e8a100', freeze: '#2f7be0', dizzy: '#8e5bd0' }[f.kind], 'center', '#fff');
     } else if (f.kind === 'pick') {
       // 가져간 카트의 색으로 퍼지는 고리
       ctx.strokeStyle = PLAYERS[f.by].color;
@@ -1505,8 +2111,14 @@ function drawDrive(d, me) {
   text(String(me.i + 1), hudX + fs * 0.7, d.y + fs * 0.95, fs, '#fff', 'center', INK);
   text(`${P.name} ${rankOf(me)}위`, hudX + fs * 1.7, d.y + fs * 0.95, fs, INK, 'left', SKY);
   text(`${Math.floor(Math.min(me.wx, CONFIG.raceLength))}m`, d.x + d.w - 6, d.y + fs * 0.95, fs, INK, 'right', SKY);
-  if (me.boost > 0) text('부스터!', d.x + d.w - 6, d.y + fs * 2.1, fs * 0.9, '#e8801a', 'right', SKY);
-  if (me.slow > 0) text(`감속 ${me.slow.toFixed(1)}s`, d.x + d.w - 6, d.y + fs * (me.boost > 0 ? 3.2 : 2.1), fs * 0.9, '#2f7be0', 'right', SKY);
+  const status = [
+    me.boost > 0 && ['부스터!', '#e8801a'],
+    me.slow > 0 && [`감속 ${me.slow.toFixed(1)}s`, '#2f7be0'],
+    me.slip > 0 && [`미끌미끌 ${me.slip.toFixed(1)}s`, '#e8a100'],
+    me.freeze > 0 && [`꽁꽁 ${me.freeze.toFixed(1)}s`, '#2f7be0'],
+    me.dizzy > 0 && [`해롱해롱 ${me.dizzy.toFixed(1)}s`, '#8e5bd0'],
+  ].filter(Boolean);
+  status.forEach(([label, color], k) => text(label, d.x + d.w - 6, d.y + fs * (2.1 + k * 1.1), fs * 0.9, color, 'right', SKY));
 
   if (ended) {
     const won = game.winners.includes(me.i);
@@ -1577,6 +2189,8 @@ function drawPad(pan, p) {
   ctx.globalAlpha = 0.45;
   text(`${P.name} 터치 화면`, pad.x + pad.w / 2, pad.y + pad.h / 2, clamp(pad.h * 0.16, 12, 30), P.color);
   ctx.globalAlpha = 1;
+  const lock = p.freeze > 0 ? '꽁꽁! 움직일 수 없어요' : p.slip > 0 ? '미끌! 움직일 수 없어요' : p.dizzy > 0 ? '해롱해롱~ 조작이 반대로!' : '';
+  if (lock) text(lock, pad.x + pad.w / 2, pad.y + pad.h * 0.22, clamp(pad.h * 0.14, 11, 24), p.dizzy > 0 ? '#8e5bd0' : '#2f7be0', 'center', '#fff');
 
   // 주행 영역 속 카트 위치를 조작 공간에 대응시켜 보여준다.
   const inr = padInner(pad);
@@ -1607,10 +2221,11 @@ function drawHelpCell(pan) {
   ctx.setLineDash([8, 6]);
   ctx.stroke();
   ctx.setLineDash([]);
-  const lines = ['조작 안내', '터치 화면에 손가락 → 카트 이동', '≫ 부스터: 빨라져요 (1등은 못 먹어요)', '✸ 공격 칸 → 상대 번호 터치', '레이저 칸 → 레이저 발사! 앞쪽 끝까지', '날아오는 공격은 피하기!'];
-  const fs = clamp(Math.min(pan.h * 0.075, pan.w * 0.055), 11, 24);
+  const lines = ['조작 안내', '터치 화면에 손가락 → 카트 이동', '≫ 부스터: 빨라져요 (1등은 못 먹어요)', '✸ 공격 칸 → 상대 번호 터치', '레이저 칸 → 레이저 발사! 앞쪽 끝까지',
+    '로켓 → 상대 모두에게 발사!', COURSES[game.course].hint];
+  const fs = clamp(Math.min(pan.h / (lines.length * 1.8), pan.w * 0.055), 10, 24);
   lines.forEach((ln, k) => {
-    text(ln, pan.x + pan.w / 2, pan.y + pan.h / 2 + (k - 2.5) * fs * 1.7, k ? fs : fs * 1.3, k ? 'rgba(43,38,34,.75)' : INK);
+    text(ln, pan.x + pan.w / 2, pan.y + pan.h / 2 + (k - (lines.length - 1) / 2) * fs * 1.6, k ? fs : fs * 1.3, k ? 'rgba(43,38,34,.75)' : INK);
   });
 }
 
@@ -1692,6 +2307,67 @@ function drawRaceScreen() {
   });
   if (game.state === 'countdown') drawCenterCall(String(Math.ceil(game.countdown)));
   else if (game.state === 'race' && game.goFlash > 0) drawCenterCall('출발!');
+  else if (game.state === 'cutscene') drawCutscene();
+}
+
+// 로켓 컷신: 모든 화면을 덮고, 로켓을 얻은 카트가 상대 수만큼 로켓을 쏘아 올린다.
+function drawCutscene() {
+  const t = game.cut.t;
+  if (t > CONFIG.cutShow) return;
+  const by = game.cut.by;
+  const P = PLAYERS[by];
+  const a = Math.min(1, t / 0.2, (CONFIG.cutShow - t) / 0.3);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(30,24,40,.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.lineJoin = ctx.lineCap = 'round';
+
+  // 뒤에서 도는 집중선
+  const cx = W * 0.3;
+  const cy = H * 0.62;
+  ctx.fillStyle = P.color;
+  ctx.globalAlpha = a * 0.5;
+  spiky(cx, cy, Math.max(W, H) * 0.5, Math.min(W, H) * 0.18, 18, t * 0.8);
+  ctx.fill();
+  ctx.globalAlpha = a;
+
+  const ks = Math.min((H * 0.36) / 136, (W * 0.26) / 116);
+  const shake = t < 0.5 ? 0 : Math.sin(t * 60) * 3;
+  drawKart(cx + shake, cy + 60 * ks, ks, P.color, 'win', { boost: true, tag: by + 1 });
+
+  // 상대 수만큼 로켓이 차례로 오른쪽 위로 솟아오른다.
+  const foes = game.players.filter((p) => p.i !== by);
+  const rs = ks * 0.9;
+  foes.forEach((p, k) => {
+    const q = clamp((t - 0.45 - k * 0.12) / 0.9, 0, 1);
+    if (q <= 0) return;
+    const e = q * q;
+    const x0 = cx + 40 * ks;
+    const y0 = cy - 40 * ks;
+    const x1 = W * 1.15;
+    const y1 = H * (0.12 + (0.6 * k) / Math.max(1, foes.length - 1));
+    const x = x0 + (x1 - x0) * e;
+    const y = y0 + (y1 - y0) * e - Math.sin(q * Math.PI) * H * 0.15;
+    // 연기 자국
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    for (let j = 1; j <= 5; j++) {
+      const qe = Math.max(0, q - j * 0.06) ** 2;
+      ctx.beginPath();
+      ctx.arc(x0 + (x1 - x0) * qe, y0 + (y1 - y0) * qe - Math.sin(Math.max(0, q - j * 0.06) * Math.PI) * H * 0.15, (6 + j * 3) * rs, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const qn = Math.min(1, q + 0.02);
+    const nx = x0 + (x1 - x0) * qn * qn;
+    const ny = y0 + (y1 - y0) * qn * qn - Math.sin(qn * Math.PI) * H * 0.15;
+    drawRocket(x, y, rs, Math.atan2(ny - y, nx - x), P.color, String(p.i + 1));
+  });
+
+  const fs = clamp(Math.min(W * 0.07, H * 0.12), 24, 84);
+  const pop = 1 + Math.max(0, 0.3 - t) * 2;
+  text(`${P.name} 로켓 발사!`, W / 2, H * 0.16, fs * pop, P.color, 'center', '#fff');
+  text('상대 모두에게 명중!', W / 2, H * 0.16 + fs * 1.05, fs * 0.5, '#ffe27a', 'center', INK);
+  ctx.restore();
 }
 
 // 레이스가 끝나고 3초 뒤 나오는 시상대. 1등이 가운데, 2등은 왼쪽, 3등은 오른쪽, 그다음은 바깥쪽으로 번갈아 선다.
@@ -1727,19 +2403,28 @@ function drawPodium() {
   });
 }
 
+// 타이틀 배경은 고른 코스의 모습이다.
 function drawTitleScene() {
   const s = Math.min((H * 0.42) / 136, (W * 0.25) / 116);
   const roadTop = H * 0.9 - 70 * s;
   ctx.lineJoin = ctx.lineCap = 'round';
   drawRoad({ x: 0, y: 0, w: W, h: H }, s, roadTop, W / CONFIG.viewMeters, 0);
   drawSign(W * 0.8, roadTop, s * 1.4, 'Goal');
+  if (game.course === 'jungle') {
+    drawMonkey(W * 0.6, roadTop + 4 * s, s * 1.2, Math.sin(game.time * 3) > 0.6);
+    drawBanana(W * 0.64, H * 0.95, s * 1.2);
+  } else if (game.course === 'arctic') {
+    drawPuddle(W * 0.64, H * 0.94, 90 * s, 18 * s, s);
+  } else if (game.course === 'desert') {
+    drawSnake(W * 0.64, H * 0.84 + Math.sin(game.time * 2) * 20 * s, s * 1.2, 1, true);
+  }
   drawKart(W * 0.38, H * 0.9, s, PLAYERS[0].color, 'drive');
 }
 
 function render() {
   ctx.fillStyle = PAPER;
   ctx.fillRect(0, 0, W, H);
-  if (game.state === 'title' || game.state === 'select') drawTitleScene();
+  if (game.state === 'title' || game.state === 'select' || game.state === 'course') drawTitleScene();
   else if (game.state === 'result') drawPodium();
   else drawRaceScreen();
 }

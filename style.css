@@ -90,7 +90,10 @@ button.big { font-size: clamp(20px, 5.5vh, 34px); background: #ffe27a; padding: 
 button.sub { background: #fff; }
 
 .counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-.counts button.on { background: #9ecbff; transform: translate(2px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+.courses { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.courses button { display: flex; align-items: center; justify-content: center; gap: 0.3em; }
+.courses span { font-size: 1.2em; }
+.counts button.on, .courses button.on { background: #9ecbff; transform: translate(2px, 3px); box-shadow: 1px 1px 0 var(--ink); }
 
 .row { display: flex; gap: 14px; align-items: center; justify-content: center; }
 
