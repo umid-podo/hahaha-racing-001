@@ -274,6 +274,43 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   r = await page.evaluate(() => { startRace(2); game.items = []; game.players[0].tOff = OFF_MAX; step(0.5 + 0.417); return game.players[0].off; });
   ok('전후 이동은 10m/s', Math.abs(r - (0.5 + 0.417) * 10) < 0.2, r);
 
+  // --- 브라우저 확대·스크롤 제스처 차단 (iOS Safari는 user-scalable=no를 무시한다) ---
+  r = await page.evaluate(() => {
+    startRace(2); game.items = [];
+    const c = document.getElementById('game'); const rect = c.getBoundingClientRect();
+    const pads = game.layout.panels.map((p) => padInner(p.pad));
+    const pt = (id, k, fx, fy) => ({ id, x: rect.left + pads[k].x + pads[k].w * fx, y: rect.top + pads[k].y + pads[k].h * fy });
+    const ptr = (type, p) => c.dispatchEvent(new PointerEvent(type, { pointerId: p.id, pointerType: 'touch', clientX: p.x, clientY: p.y, bubbles: true, cancelable: true }));
+    const touch = (type, list, target = c) => {
+      const ts = list.map((p) => new Touch({ identifier: p.id, target, clientX: p.x, clientY: p.y }));
+      const e = new TouchEvent(type, { touches: type === 'touchend' ? [] : ts, changedTouches: ts, bubbles: true, cancelable: true });
+      target.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    const plain = (type, init = {}) => { const e = new (init.ctrlKey !== undefined ? WheelEvent : Event)(type, { bubbles: true, cancelable: true, ...init }); c.dispatchEvent(e); return e.defaultPrevented; };
+    // 두 사람이 동시에 조향: 브라우저에서는 포인터 이벤트 뒤에 터치 이벤트가 온다
+    const a = pt(41, 0, 1, 0), b = pt(42, 1, 0, 1);
+    ptr('pointerdown', a); ptr('pointerdown', b);
+    const pinch = touch('touchstart', [a, b]);
+    const a2 = pt(41, 0, 0.5, 0.5); ptr('pointermove', a2);
+    const move = touch('touchmove', [a2, b]);
+    const t = game.players.map((p) => [p.tOff, p.tLat]);
+    const end = touch('touchend', [a2, b]);
+    ptr('pointerup', a2); ptr('pointerup', b);
+    const btn = document.getElementById('btnStart');
+    return {
+      pinch, move, end, t, offMax: OFF_MAX,
+      tapOnHtml: touch('touchstart', [pt(43, 0, 0, 0)], btn),
+      gesture: ['gesturestart', 'gesturechange', 'gestureend', 'dblclick'].map((type) => plain(type)),
+      ctrlWheel: plain('wheel', { ctrlKey: true, deltaY: 5 }), wheel: plain('wheel', { ctrlKey: false, deltaY: 5 }),
+      css: [document.documentElement, document.body, c, btn].map((el) => getComputedStyle(el).touchAction),
+    };
+  });
+  ok('여러 손가락 터치·이동·연타의 기본 동작(핀치·스크롤·더블탭 확대) 차단', r.pinch && r.move && r.end && r.tapOnHtml, JSON.stringify(r));
+  ok('차단 중에도 두 사람의 동시 조향은 그대로', Math.abs(r.t[0][0] - r.offMax / 2) < 1e-9 && Math.abs(r.t[0][1] - 0.5) < 1e-9 && r.t[1][0] === 0 && Math.abs(r.t[1][1] - 1) < 1e-9, JSON.stringify(r.t));
+  ok('Safari 제스처·더블클릭·ctrl+휠 확대 차단, 일반 휠은 유지', r.gesture.every(Boolean) && r.ctrlWheel && !r.wheel, JSON.stringify(r));
+  ok('모든 요소 touch-action: none', r.css.every((v) => v === 'none'), JSON.stringify(r.css));
+
   // --- 봇 시뮬레이션: 선두가 아니어도 아이템을 여러 번 얻는가 ---
   r = await page.evaluate(() => {
     const runs = [];
