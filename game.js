@@ -1027,9 +1027,25 @@ document.addEventListener('visibilitychange', () => {
   pause();
   updateEngine(); // 가려지면 프레임이 멈추므로 엔진음을 여기서 끈다
 });
-for (const type of ['touchmove', 'gesturestart', 'contextmenu', 'dblclick']) {
-  document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+// iOS Safari는 viewport의 user-scalable=no를 무시하고, 빠른 연타에 확대하거나 여러 손가락에 핀치 확대·스크롤을 한다.
+// 게임 입력은 모두 포인터 이벤트로 받으므로 터치 이벤트의 기본 동작은 전부 막는다. 터치 이벤트를 막아도
+// 포인터 이벤트(멀티터치 포함)는 그대로 전달되고, 버튼도 pointerdown으로 동작하므로 click이 없어도 된다.
+// 소리 잠금 해제(unlockAudio)는 위에서 touchend 리스너로 먼저 등록되어 있어 영향이 없다.
+const blockDefault = (e) => {
+  if (e.cancelable) e.preventDefault();
+};
+for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+  document.addEventListener(type, blockDefault, { passive: false, capture: true });
 }
+// Safari 전용 핀치 제스처 이벤트와 더블탭·길게 누르기·선택·끌기
+for (const type of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick', 'contextmenu', 'selectstart', 'dragstart']) {
+  document.addEventListener(type, blockDefault, { passive: false, capture: true });
+}
+// 트랙패드·키보드를 붙인 iPad나 데스크톱의 확대(ctrl+휠, 핀치)
+document.addEventListener('wheel', (e) => e.ctrlKey && blockDefault(e), { passive: false, capture: true });
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '0'].includes(e.key)) blockDefault(e);
+});
 window.addEventListener('resize', resize);
 
 // ---------- 그리기: 캐릭터 ----------
