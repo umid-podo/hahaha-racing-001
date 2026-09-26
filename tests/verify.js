@@ -11,7 +11,8 @@ let fails = 0;
 const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!cond) fails++; };
 
 (async () => {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // CHROME_PATH를 주면 그 실행 파일을, 아니면 시스템 Chrome을 쓴다.
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH, headless: true } : { channel: 'chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1180, height: 820 }, deviceScaleFactor: 2 });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -24,12 +25,13 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     window.update = () => {};
     window.step = (sec, dt = 1 / 60) => { for (let t = 0; t < sec - 1e-9; t += dt) realUpdate(dt); };
     window.tapEl = (id) => document.getElementById(id).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-    window.startRace = (n) => {
-      if (game.state === 'result' || game.state === 'win' || game.state === 'race') { game.state = 'title'; }
+    window.startRace = (n, course = 'road') => {
       game.state = 'title';
       tapEl('btnStart');
       document.querySelector(`#counts [data-n="${n}"]`).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-      tapEl('btnSelect'); tapEl('btnGo');
+      tapEl('btnSelect');
+      document.querySelector(`#courses [data-c="${course}"]`).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      tapEl('btnCourse'); tapEl('btnGo');
       step(3.01);
     };
   });
@@ -43,7 +45,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   // --- 속도: 가감속과 기본 속도 ---
   let r = await page.evaluate(() => { game.items = []; const b0 = game.players[0].base; step(0.2); const m = game.players[0].mul; step(1.8); const b1 = game.players[0].base; step(1); return { m, v: game.players[0].base - b1, mul: game.players[0].mul }; });
   ok('출발 직후 짧은 가속 (0.2초 시점 mul<1)', r.m > 0.3 && r.m < 0.6, r.m);
-  ok('기본 속도 20m/s', Math.abs(r.v - 20) < 0.01 && r.mul === 1, r.v);
+  ok('기본 속도 25m/s', Math.abs(r.v - 25) < 0.01 && r.mul === 1, r.v);
 
   // --- 상대 위치의 일관성 ---
   r = await page.evaluate(() => {
@@ -64,7 +66,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     for (const p of game.players) { p.mul = 1; p.tLat = p.lat = 0.5; }
     A.lat = A.tLat = 0.5; B.lat = B.tLat = 0.5;
     A.base = 200; B.base = 192; // A가 8m 앞. 같은 lat이면 충돌로 밀리므로 조금 벌린다
-    A.lat = A.tLat = 0.45; B.lat = B.tLat = 0.62;
+    A.lat = A.tLat = 0.48; B.lat = B.tLat = 0.6;
     game.items = [{ wx: 215, lat: 0.53, type: 'attack', row: 0, takenBy: null }];
     step(1.5);
     return { takenBy: game.items[0].takenBy, aGot: A.attack, bGot: B.attack, bwx: B.wx, fx: game.fx.length };
@@ -76,7 +78,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     startRace(4);
     const ps = game.players;
     ps.forEach((p, i) => { p.mul = 1; p.base = 300; p.off = p.tOff = 0; });
-    ps[0].lat = ps[0].tLat = 0.40; ps[1].lat = ps[1].tLat = 0.60; ps[2].lat = ps[2].tLat = 0.05; ps[3].lat = ps[3].tLat = 0.95;
+    ps[0].lat = ps[0].tLat = 0.45; ps[1].lat = ps[1].tLat = 0.55; ps[2].lat = ps[2].tLat = 0.05; ps[3].lat = ps[3].tLat = 0.95;
     game.items = [{ wx: 304, lat: 0.5, type: 'attack', row: 0, takenBy: null }];
     step(1 / 60);
     const first = game.items[0].takenBy;
@@ -89,7 +91,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     startRace(2);
     const [A, B] = game.players;
     A.mul = B.mul = 1; A.base = 300; B.base = 600; A.lat = A.tLat = 0.5; A.attack = true; // B가 1등이라 A는 부스터를 먹을 수 있다
-    game.items = [{ wx: 306, lat: 0.5, type: 'attack', row: 0, takenBy: null }, { wx: 330, lat: 0.36, type: 'boost', row: 1, takenBy: null }, { wx: 330, lat: 0.56, type: 'boost', row: 1, takenBy: null }, { wx: 350, lat: 0.46, type: 'boost', row: 2, takenBy: null }, { wx: 370, lat: 0.46, type: 'boost', row: 3, takenBy: null }];
+    game.items = [{ wx: 306, lat: 0.5, type: 'attack', row: 0, takenBy: null }, { wx: 330, lat: 0.41, type: 'boost', row: 1, takenBy: null }, { wx: 330, lat: 0.51, type: 'boost', row: 1, takenBy: null }, { wx: 350, lat: 0.46, type: 'boost', row: 2, takenBy: null }, { wx: 370, lat: 0.46, type: 'boost', row: 3, takenBy: null }];
     A.tLat = 0.46; // 두 부스터 사이
     step(0.6); A.lat = A.tLat = 0.46; step(3);
     return { atk: game.items[0].takenBy, row1: game.items.slice(1, 3).map((i) => i.takenBy), next: game.items.slice(3).map((i) => i.takenBy) };
@@ -136,7 +138,9 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   r = await page.evaluate(() => {
     const out = {};
     for (const n of [2, 4, 6]) {
-      const items = makeItems(n);
+      const all = makeItems(n);
+      const rockets = all.filter((i) => i.type === 'rocket');
+      const items = all.filter((i) => i.type !== 'rocket');
       const rows = {};
       for (const it of items) (rows[it.row] ||= []).push(it);
       const list = Object.values(rows);
@@ -145,11 +149,12 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
         mixed: list.every((rw) => rw.some((i) => i.type === 'boost') && rw.some((i) => i.type !== 'boost')),
         laser: items.some((i) => i.type === 'laser'),
         range: items.every((i) => i.wx >= 100 && i.wx <= 900 && i.lat > 0 && i.lat < 1),
+        rocket: rockets.length === 1 && rockets[0].wx > 400 && rockets[0].wx < 600 && items.every((i) => Math.abs(i.wx - rockets[0].wx) > 20),
       };
     }
     return out;
   });
-  ok('줄당 칸 수 2/3/3, 부스터·무기 혼합, 레이저 포함, 100~900m', r[2].cells === 2 && r[4].cells === 3 && r[6].cells === 3 && [2, 4, 6].every((n) => r[n].mixed && r[n].range && r[n].laser), JSON.stringify(r));
+  ok('줄당 칸 수 2/3/3, 부스터·무기 혼합, 레이저 포함, 100~900m', r[2].cells === 2 && r[4].cells === 3 && r[6].cells === 3 && [2, 4, 6].every((n) => r[n].mixed && r[n].range && r[n].laser && r[n].rocket), JSON.stringify(r));
 
   // --- 공격 ---
   r = await page.evaluate(() => {
@@ -159,18 +164,18 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     fire(A, 1); const noAmmo = game.shots.length;
     A.attack = true; fire(A, 1);
     const rec = { ...game.shots[0] };
-    step(0.5); const mid = B.slow;
-    step(0.2);
+    step(0.2); const mid = B.slow;
+    step(0.1);
     const hitSlow = B.slow, prot = B.protect;
     step(0.5); const mul = B.mul;
     step(2.6); const after = B.slow;
     // 피하기
-    A.attack = true; fire(A, 1); B.tLat = B.lat > 0.5 ? 0 : 1; step(1.1);
+    A.attack = true; fire(A, 1); B.tLat = B.lat > 0.5 ? 0 : 1; step(0.4);
     return { noAmmo, rec, mid, hitSlow, prot, mul, after, dodged: B.slow, fx: game.fx.map((f) => f.kind) };
   });
   ok('공격 미보유 시 발사 안 됨', r.noAmmo === 0);
   ok('대상의 base 상대 좌표로 기록', r.rec.u === 6 && Math.abs(r.rec.v - 0.75) < 1e-9, JSON.stringify(r.rec));
-  ok('공격은 1/1.5초 만에 도착(속도 1.5배), 도착 시 감속 3초·보호 1초', r.mid === 0 && r.hitSlow > 2.9 && r.prot > 0.9, r.hitSlow);
+  ok('공격은 0.25초 만에 도착, 도착 시 감속 3초·보호 1초', r.mid === 0 && r.hitSlow > 2.9 && r.prot > 0.9, r.hitSlow);
   ok('감속 배율 0.6 (따라잡기 없음: 선두)', Math.abs(r.mul - 0.6) < 1e-9, r.mul);
   ok('3초 뒤 해제', r.after === 0);
   ok('피하면 맞지 않음', r.dodged === 0 && r.fx.includes('miss'), JSON.stringify(r.fx));
@@ -235,7 +240,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     step(1); const still = game.state; step(2.1);
     return { wxAtWin, state, winners, wins, still, end: game.state, title: document.getElementById('resultTitle').textContent, list: standings().map((e) => `${e.rank}위 ${e.rec}`).join(' ') };
   });
-  ok('wx가 1000을 넘는 프레임에 승리 판정', r.state === 'win' && r.wxAtWin >= 1000 && r.wxAtWin < 1000.4, r.wxAtWin);
+  ok('wx가 1000을 넘는 프레임에 승리 판정', r.state === 'win' && r.wxAtWin >= 1000 && r.wxAtWin < 1000.5, r.wxAtWin);
   ok('승수 +1, 3초 뒤 결과', r.winners[0] === 0 && r.wins[0] === 1 && r.still === 'win' && r.end === 'result', r.title);
   ok('시상대 순서와 완주/미완주 기록', /^1위 완주 2위 9\d\dm$/.test(r.list), r.list);
   r = await page.evaluate(() => { tapEl('btnAgain'); tapEl('btnAgain'); return { state: game.state, wins: [...game.wins], wx: game.players.map((p) => p.wx) }; });
@@ -262,8 +267,8 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     ev('pointerdown', 14, lb.x + lb.w * 0.8, lb.y + lb.h / 2);
     return { t, pos, offMax: OFF_MAX, shots: game.shots.map((s) => [s.from, s.to]), p2steer: game.players[1].tOff, beams: game.beams.map((b) => b.from), p3steer: game.players[2].tOff };
   });
-  ok('터치가 처음 닿은 패널에 귀속', r.t[1][0] === 0 && Math.abs(r.t[1][1] - 0.375) < 1e-9 && r.t[3][0] === 0 && r.t[3][1] === 1, JSON.stringify(r.t));
-  ok('가로축→off(10m/s 제한), 세로축→lat', Math.abs(r.pos[0][0] - r.t[0][0]) < 1e-6 && r.pos[3][1] === 1, JSON.stringify(r.pos[0]));
+  ok('터치가 처음 닿은 패널에 귀속', r.t[1][0] === 0 && Math.abs(r.t[1][1] - 0.375) < 1e-9 && r.t[3][0] === 0 && Math.abs(r.t[3][1] - 1) < 1e-9, JSON.stringify(r.t));
+  ok('가로축→off(10m/s 제한), 세로축→lat', Math.abs(r.pos[0][0] - r.t[0][0]) < 1e-6 && Math.abs(r.pos[3][1] - 1) < 1e-9, JSON.stringify(r.pos[0]));
   ok('공격 버튼은 조향으로 전달되지 않고 발사', r.shots.length === 1 && r.shots[0][0] === 1 && r.shots[0][1] === 2 && r.p2steer === 0);
   ok('레이저 보유 시 버튼 줄이 레이저 발사', r.beams.length === 1 && r.beams[0] === 2 && r.p3steer === 0, JSON.stringify(r.beams));
   r = await page.evaluate(() => { startRace(2); game.items = []; game.players[0].tOff = OFF_MAX; step(0.5 + 0.417); return game.players[0].off; });
@@ -277,7 +282,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
       startRace(n);
       const got = Array(n).fill(0);
       let t = 0;
-      while (game.state === 'race' && t < 120) {
+      while ((game.state === 'race' || game.state === 'cutscene') && t < 120) {
         for (const p of game.players) {
           const next = game.items.filter((i) => i.takenBy === null && i.wx > p.wx + 1 && canTake(p, i)).sort((a, b) => a.wx - b.wx || Math.abs(a.lat - p.lat) - Math.abs(b.lat - p.lat))[0];
           if (next) p.tLat = next.lat;
@@ -295,7 +300,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   });
   console.log(r.map((x) => JSON.stringify(x)).join('\n'));
   ok('모든 플레이어가 한 판에 아이템을 여러 번 획득', r.every((x) => x.got.every((g) => g >= 2)));
-  ok('한 판 길이 40~55초', r.every((x) => x.t > 40 && x.t < 55));
+  ok('한 판 길이 32~48초', r.every((x) => x.t > 32 && x.t < 48));
 
   // --- 소리: 실제로 들리는지는 실기기 확인 대상이고, 여기서는 오프라인 렌더링의 음량만 본다 ---
   r = await page.evaluate(async () => {
@@ -335,12 +340,99 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     A.base = 999; step(0.2);
     return log.join(' ');
   });
-  ok('이벤트마다 효과음', r === 'tap tap tap tap count count count go boost attack fire hit fire miss beam bump win', r);
+  ok('이벤트마다 효과음', r === 'tap tap tap tap tap tap count count count go boost attack fire hit fire miss beam bump win', r);
+
+  // --- 코스 선택 흐름 ---
+  r = await page.evaluate(() => {
+    game.state = 'title'; tapEl('btnStart'); tapEl('btnSelect');
+    const afterCount = game.state;
+    const shown = !document.getElementById('course').classList.contains('hidden');
+    document.querySelector('#courses [data-c="desert"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    tapEl('btnCourse');
+    return { afterCount, shown, state: game.state, course: game.course, tip: document.getElementById('courseTip').textContent, snakes: game.hazards.snakes.length };
+  });
+  ok('인원수 → 코스 선택 → 준비', r.afterCount === 'course' && r.shown && r.state === 'ready' && r.course === 'desert' && r.tip.includes('뱀') && r.snakes > 5, JSON.stringify(r));
+  r = await page.evaluate(() => ['road', 'jungle', 'arctic', 'desert'].map((c) => { startRace(4, c); const h = game.hazards; return [c, h.puddles.length, h.snakes.length, h.monkeys.length]; }));
+  ok('코스별 장애물: 레이싱 없음, 정글 원숭이, 북극 웅덩이, 사막 뱀', r[0].slice(1).every((x) => x === 0) && r[1][3] > 10 && r[2][1] > 10 && r[3][2] > 5, JSON.stringify(r));
+
+  // --- 로켓 ---
+  r = await page.evaluate(() => {
+    startRace(4); game.items = [];
+    const ps = game.players; ps.forEach((p, i) => { p.mul = 1; p.base = 400 - i * 10; p.lat = p.tLat = (i + 0.5) / 4; });
+    ps[3].protect = 5; // 보호 중이어도 맞는다
+    game.items = [{ wx: 405, lat: ps[1].lat, type: 'rocket', row: -1, takenBy: null }, { wx: 415, lat: ps[0].lat, type: 'rocket', row: -1, takenBy: null }];
+    const leaderCant = !canTake(ps[0], game.items[1]);
+    step(0.8);
+    const st = game.state, by = game.cut && game.cut.by, base = ps.map((p) => p.base);
+    step(1.5); const frozen = ps.every((p, i) => p.base === base[i]) && game.state === 'cutscene';
+    step(1.2);
+    return { leaderCant, st, by, frozen, end: game.state, slow: ps.map((p) => p.slow > 0), taken: game.items.map((i) => i.takenBy) };
+  });
+  ok('1등은 로켓을 못 먹고, 먹으면 컷신 동안 경기 정지', r.leaderCant && r.st === 'cutscene' && r.by === 1 && r.frozen && r.taken[1] === null, JSON.stringify(r));
+  ok('컷신 뒤 로켓을 쏜 사람 빼고 모두 맞음(보호 무시)', r.end === 'race' && r.slow.join() === 'true,false,true,true', JSON.stringify(r.slow));
+
+  // --- 정글: 바나나 ---
+  r = await page.evaluate(() => {
+    startRace(2, 'jungle'); game.items = [];
+    const [A, B] = game.players; A.mul = B.mul = 1; A.base = 300; B.base = 100; B.lat = B.tLat = 0.9;
+    A.lat = A.tLat = 0.3;
+    game.hazards.monkeys = []; game.hazards.bananas = [{ from: 310, wx: 310, lat: 0.3, t: 1, gone: false }];
+    step(0.5);
+    const slip = A.slip, lat0 = A.lat; A.tLat = 0.9; A.tOff = OFF_MAX;
+    step(1.2); const locked = A.lat === lat0 && A.off === 0, mul = A.mul;
+    step(1); const moved = A.lat > lat0;
+    return { slip, locked, mul, moved, left: game.hazards.bananas.length };
+  });
+  ok('바나나를 밟으면 2초 미끄러져 조작 불가, 껍질은 사라짐', r.slip > 1.5 && r.locked && r.mul < 0.5 && r.moved && r.left === 0, JSON.stringify(r));
+  r = await page.evaluate(() => {
+    startRace(2, 'jungle'); game.items = [];
+    let thrown = 0; const h = game.hazards;
+    for (let k = 0; k < 600; k++) { const n = h.bananas.length; realUpdate(1 / 60); if (h.bananas.length > n) thrown++; }
+    return { thrown, near: h.bananas.every((b) => h.monkeys.some((m) => m.wx === b.from)) };
+  });
+  ok('원숭이가 가끔 바나나를 던짐 (10초에 2~12번)', r.thrown >= 2 && r.thrown <= 12 && r.near, JSON.stringify(r));
+
+  // --- 북극: 물웅덩이 ---
+  r = await page.evaluate(() => {
+    startRace(2, 'arctic'); game.items = [];
+    const [A, B] = game.players; A.mul = B.mul = 1; A.base = 300; B.base = 100; B.lat = B.tLat = 0.95;
+    A.lat = A.tLat = 0.5;
+    game.hazards.puddles = [{ wx: 306, lat: 0.5, len: 5, hl: 0.09 }];
+    step(0.3);
+    const b0 = A.base, frz = A.freeze; A.tLat = 0.1;
+    step(1.5); const still = A.base === b0 && A.lat === 0.5;
+    step(1); const going = A.base > b0 && A.freeze === 0 && A.lat < 0.5;
+    return { frz, still, going };
+  });
+  ok('물웅덩이에 빠지면 2초 동안 얼어서 멈춤', r.frz > 1.5 && r.still && r.going, JSON.stringify(r));
+
+  // --- 사막: 뱀 ---
+  r = await page.evaluate(() => {
+    startRace(2, 'desert'); game.items = [];
+    const [A, B] = game.players; A.mul = B.mul = 1; A.base = 300; B.base = 100; B.lat = B.tLat = 0.95;
+    A.lat = A.tLat = 0.5; A.off = A.tOff = 0;
+    game.raceT = 0;
+    const run = 1 / CONFIG.snakeSpeed;
+    // 0.2초 뒤 뱀 머리가 도로 한가운데를 지나도록 위상을 맞춘다
+    game.hazards.snakes = [{ wx: 305, phase: CONFIG.snakeRest + run * 0.5 - 0.2 }];
+    step(0.3);
+    const dz = A.dizzy;
+    const c = document.getElementById('game'); const rect = c.getBoundingClientRect();
+    const pad = padInner(game.layout.panels[0].pad);
+    c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 31, clientX: rect.left + pad.x + pad.w, clientY: rect.top + pad.y, bubbles: true, cancelable: true }));
+    const inv = [A.tOff, A.tLat];
+    step(4);
+    const back = [A.tOff, A.tLat];
+    c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 31, bubbles: true, cancelable: true }));
+    return { dz, inv, back, offMax: OFF_MAX };
+  });
+  ok('뱀에 부딪히면 4초 해롱해롱', r.dz > 3.5, JSON.stringify(r));
+  ok('해롱해롱: 앞(오른쪽)·위를 누르면 뒤·아래로, 풀리면 원래대로', r.inv[0] === 0 && r.inv[1] === 1 && r.back[0] === r.offMax && r.back[1] === 0, JSON.stringify(r));
 
   // --- 스크린샷 ---
   await page.evaluate(() => { window.update = window.realUpdate; });
-  const shot = async (name, n, setup) => {
-    await page.evaluate(({ n, setup }) => { window.update = () => {}; startRace(n); eval(setup); step(1 / 60); }, { n, setup });
+  const shot = async (name, n, setup, course = 'road') => {
+    await page.evaluate(({ n, setup, course }) => { window.update = () => {}; startRace(n, course); eval(setup); step(1 / 60); }, { n, setup, course });
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
   };
@@ -355,6 +447,11 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   };
   await podium('podium3', 3);
   await podium('podium6', 6);
+  await shot('jungle4', 4, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=200+i*5;}); game.hazards.bananas=[{from:game.hazards.monkeys.find(m=>m.wx>215).wx,wx:222,lat:.3,t:1,gone:false},{from:game.hazards.monkeys.find(m=>m.wx>215).wx,wx:226,lat:.7,t:.3,gone:false}]; ps[1].slip=1.2; step(0.05);`, 'jungle');
+  await shot('arctic3', 3, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=200+i*6;}); game.hazards.puddles.push({wx:222,lat:.5,len:5,hl:.09}); ps[2].freeze=1.5; step(0.05);`, 'arctic');
+  await shot('desert2', 2, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=200+i*4;}); game.hazards.snakes.push({wx:220,phase:0.9}); ps[1].dizzy=3; step(0.05);`, 'desert');
+  await shot('rocketCut', 4, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=300+i*4;}); startCutscene(ps[2]); step(1.1);`);
+  await shot('rocketFly', 4, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=300+i*4;}); startCutscene(ps[2]); step(2.3);`, 'desert');
   await shot('s2goal', 2, `const ps=game.players; ps.forEach(p=>p.mul=1); ps[0].base=975; ps[1].base=970; ps[0].off=ps[0].tOff=10; game.items=[]; step(1.2);`);
   await page.setViewportSize({ width: 844, height: 390 });
   await page.evaluate(() => resize());

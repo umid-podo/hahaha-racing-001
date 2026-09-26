@@ -14,7 +14,7 @@ python3 -m http.server 8000   # http://localhost:8000
 cd tests && npm install && npm test
 ```
 
-Playwright로 로컬 Chrome을 띄워 화면을 확인합니다. Chrome이 설치되어 있어야 합니다.
+Playwright로 로컬 Chrome을 띄워 화면을 확인합니다. Chrome이 설치되어 있어야 합니다. 다른 Chromium을 쓰려면 `CHROME_PATH=/경로/chrome npm test`로 실행합니다.
 
 ## 기획
 
