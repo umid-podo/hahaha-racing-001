@@ -130,7 +130,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     step(0.1); const early = B.slow;
     step(0.6); const bHit = B.slow > 0;
     step(3); const cHit = C.slow > 0, dHit = D.slow > 0, eHit = E.slow > 0, ePassed = E.wx > 300, aHit = A.slow > 0;
-    step(33); // 5000m 결승선까지 날아가는 시간
+    step(33); // 결승선까지 날아가는 시간
     return { noAmmo, early, bHit, cHit, dHit, eHit, ePassed, aHit, left: game.beams.length, laser: A.laser };
   });
   ok('레이저 미보유 시 발사 안 됨', r.noAmmo === 0);
@@ -152,7 +152,9 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
       const list = Object.values(rows);
       out[n] = {
         rows: list.length, cells: list[0].length,
-        mixed: list.every((rw) => rw.some((i) => i.type === 'boost') && rw.some((i) => i.type !== 'boost')),
+        // 공격·레이저·부스터가 골고루(각 1/3 ± 몇 개), 3칸 이하 줄은 칸마다 종류가 다름
+        mixed: ['boost', 'attack', 'laser'].every((t) => Math.abs(items.filter((i) => i.type === t).length - items.length / 3) <= 3)
+          && list.every((rw) => rw.length > 3 || new Set(rw.map((i) => i.type)).size === rw.length),
         laser: items.some((i) => i.type === 'laser'),
         range: items.every((i) => i.wx >= 100 && i.wx <= L - 100 && i.lat > 0 && i.lat < 1),
         rocket: rockets.length === 1 && Math.abs(rockets[0].wx - L / 2) < 100 && items.every((i) => Math.abs(i.wx - rockets[0].wx) > 20),
@@ -161,7 +163,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     }
     return out;
   });
-  ok('줄당 칸 수 2/3/3, 부스터·무기 혼합, 레이저 포함, 100m~끝-100m, 로켓 1개(중간)·레이저 폭풍 2개(1/4, 3/4)', r[2].cells === 2 && r[4].cells === 3 && r[6].cells === 3 && [2, 4, 6].every((n) => r[n].mixed && r[n].range && r[n].laser && r[n].rocket && r[n].storm), JSON.stringify(r));
+  ok('줄당 칸 수 2/3/3, 공격·레이저·부스터 골고루, 100m~끝-100m, 로켓 1개(중간)·레이저 폭풍 2개(1/4, 3/4)', r[2].cells === 2 && r[4].cells === 3 && r[6].cells === 3 && [2, 4, 6].every((n) => r[n].mixed && r[n].range && r[n].laser && r[n].rocket && r[n].storm), JSON.stringify(r));
 
   // --- 공격 ---
   r = await page.evaluate(() => {
@@ -248,9 +250,9 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     step(1); const still = game.state; step(2.1);
     return { wxAtWin, state, winners, wins, still, end: game.state, title: document.getElementById('resultTitle').textContent, list: standings().map((e) => `${e.rank}위 ${e.rec}`).join(' ') };
   });
-  ok('wx가 결승선(5000m)을 넘는 프레임에 승리 판정', r.state === 'win' && r.wxAtWin >= 5000 && r.wxAtWin < 5000.5, r.wxAtWin);
+  ok('wx가 결승선(3000m)을 넘는 프레임에 승리 판정', r.state === 'win' && r.wxAtWin >= 3000 && r.wxAtWin < 3000.5, r.wxAtWin);
   ok('승수 +1, 3초 뒤 결과', r.winners[0] === 0 && r.wins[0] === 1 && r.still === 'win' && r.end === 'result', r.title);
-  ok('시상대 순서와 완주/미완주 기록', /^1위 완주 2위 49\d\dm$/.test(r.list), r.list);
+  ok('시상대 순서와 완주/미완주 기록', /^1위 완주 2위 29\d\dm$/.test(r.list), r.list);
   r = await page.evaluate(() => { tapEl('btnAgain'); tapEl('btnAgain'); return { state: game.state, wins: [...game.wins], wx: game.players.map((p) => p.wx) }; });
   ok('다시하기: 승수 유지, 위치 초기화', r.state === 'countdown' && r.wins[0] === 1 && r.wx.every((w) => w === 0), JSON.stringify(r));
 
@@ -345,7 +347,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   });
   console.log(r.map((x) => JSON.stringify(x)).join('\n'));
   ok('모든 플레이어가 한 판에 아이템을 여러 번 획득', r.every((x) => x.got.every((g) => g >= 2)));
-  ok('한 판 길이 3~4분 (5000m)', r.every((x) => x.t > 180 && x.t < 240));
+  ok('한 판 길이 약 2분 (3000m)', r.every((x) => x.t > 105 && x.t < 150));
 
   // --- 소리: 실제로 들리는지는 실기기 확인 대상이고, 여기서는 오프라인 렌더링의 음량만 본다 ---
   r = await page.evaluate(async () => {
@@ -397,8 +399,25 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     return { afterCount, shown, state: game.state, course: game.course, tip: document.getElementById('courseTip').textContent, snakes: game.hazards.snakes.length };
   });
   ok('인원수 → 코스 선택 → 준비', r.afterCount === 'course' && r.shown && r.state === 'ready' && r.course === 'desert' && r.tip.includes('뱀') && r.snakes > 5, JSON.stringify(r));
-  r = await page.evaluate(() => ['road', 'jungle', 'arctic', 'desert'].map((c) => { startRace(4, c); const h = game.hazards; return [c, h.puddles.length, h.snakes.length, h.monkeys.length]; }));
-  ok('코스별 장애물: 레이싱 없음, 정글 원숭이, 북극 웅덩이, 사막 뱀', r[0].slice(1).every((x) => x === 0) && r[1][3] > 10 && r[2][1] > 10 && r[3][2] > 5, JSON.stringify(r));
+  r = await page.evaluate(() => ['road', 'jungle', 'arctic', 'desert', 'sea'].map((c) => { startRace(4, c); const h = game.hazards; return [c, h.puddles.length, h.snakes.length, h.monkeys.length, h.bubbles.length]; }));
+  ok('코스별 장애물: 레이싱 없음, 정글 원숭이, 북극 웅덩이, 사막 뱀, 바다 비눗방울', r[0].slice(1).every((x) => x === 0) && r[1][3] > 10 && r[2][1] > 10 && r[3][2] > 5 && r[4][4] > 30 && r[4].slice(1, 4).every((x) => x === 0), JSON.stringify(r));
+
+  // --- 바다: 산소 ---
+  r = await page.evaluate(() => {
+    startRace(2, 'sea'); game.items = []; game.hazards.bubbles = [];
+    const [A, B] = game.players; A.mul = B.mul = 1;
+    const full = A.oxy;
+    step(7); const half = A.oxy;
+    step(7.2); const gasp = A.gasp, b0 = A.base, mul = A.mul; A.tLat = A.lat > 0.5 ? 0 : 1; const lat0 = A.lat;
+    step(2.5); const still = A.base === b0 && A.lat === lat0;
+    step(0.6); const back = { gasp: A.gasp, oxy: A.oxy, moving: A.base > b0 };
+    // 비눗방울
+    A.oxy = 0.4; A.tLat = A.lat; game.hazards.bubbles = [{ wx: A.wx + 6, lat: A.lat, gone: false }];
+    step(0.5);
+    return { full, half, gasp, mul, still, back, bubbleOxy: A.oxy, left: game.hazards.bubbles.length, bOxy: B.oxy };
+  });
+  ok('바다: 산소가 14초에 걸쳐 줄고, 바닥나면 3초 멈춤', r.full === 1 && Math.abs(r.half - 0.5) < 0.02 && r.gasp > 2.5 && r.mul === 0 && r.still && r.back.gasp === 0 && r.back.oxy > 0.45 && r.back.moving, JSON.stringify(r));
+  ok('비눗방울에 닿으면 산소가 조금 차고 방울은 사라짐', r.bubbleOxy > 0.65 && r.bubbleOxy < 0.72 && r.left === 0, JSON.stringify(r));
 
   // --- 로켓 ---
   r = await page.evaluate(() => {
@@ -459,7 +478,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     return { level, shown, course, state: game.state, count: game.players.length, ai: game.players.filter((p) => p.ai).length, humanAI: !!game.players[0].ai,
       panels: game.layout.panels.length, lvl: game.level, tip: document.getElementById('modeTip').textContent, rh: v.rh, s: v.s, btns: attackButtons(game.layout.panels[0], 0).length };
   });
-  ok('솔로: 인원수 → 난이도 → 코스, 사람 1 + AI 12, 큰 화면 1개', r.level === 'level' && r.shown && r.course === 'course' && r.state === 'race' && r.count === 13 && r.ai === 12 && !r.humanAI && r.panels === 1 && r.lvl === 'expert' && r.tip.includes('전문가'), JSON.stringify(r));
+  ok('솔로: 인원수 → 난이도 → 코스, 사람 1 + AI 9, 큰 화면 1개', r.level === 'level' && r.shown && r.course === 'course' && r.state === 'race' && r.count === 10 && r.ai === 9 && !r.humanAI && r.panels === 1 && r.lvl === 'expert' && r.tip.includes('전문가'), JSON.stringify(r));
   const normalRoad = await page.evaluate(() => { startRace(2); const v = view(); return { rh: v.rh, kartLat: (18 * v.s) / v.rh }; });
   const soloRoad = await page.evaluate(() => { startRace(1); const v = view(); return { rh: v.rh, kartLat: (18 * v.s) / v.rh }; });
   ok('솔로 도로는 훨씬 넓음(카트 대비 도로 폭 2배 이상)', normalRoad.kartLat / soloRoad.kartLat > 2, JSON.stringify({ normalRoad, soloRoad }));
@@ -502,6 +521,63 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
     return { n: list.length, me: list.some((e) => e.p.i === 0), title: document.getElementById('resultTitle').textContent, state: game.state };
   });
   ok('솔로 시상대: 상위 5명 + 나', r.state === 'result' && r.n === 6 && r.me, JSON.stringify(r));
+
+  // --- 솔로 난이도 화면에서 화면이 멈추던 문제 ---
+  r = await page.evaluate(() => {
+    // 아직 경기를 한 번도 하지 않은 상태(카트 없음)에서 난이도·코스 화면을 그린다
+    game.players = []; game.state = 'title'; tapEl('btnStart');
+    document.querySelector('#counts [data-n="1"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    tapEl('btnSelect');
+    const errs = [];
+    for (const st of ['level', 'course']) { game.state = st; try { render(); } catch (e) { errs.push(st + ': ' + e.message); } }
+    return { errs };
+  });
+  ok('솔로: 난이도·코스 선택 화면을 그려도 오류 없음(카트가 없을 때)', r.errs.length === 0, JSON.stringify(r));
+
+  // --- 솔로 AI 좌우 이동 ---
+  r = await page.evaluate(() => {
+    startRace(1, 'road', 'champion');
+    const ai = game.players.slice(1);
+    // 목표 줄을 반대 방향으로 바꾼 횟수(부딪혀 밀리는 것은 빼고 AI 자신의 판단만 센다)
+    let rev = 0; const lastT = ai.map((q) => q.tLat), dir = ai.map(() => 0);
+    for (let k = 0; k < 60 * 20; k++) {
+      realUpdate(1 / 60);
+      ai.forEach((q, i) => { const d = q.tLat - lastT[i]; if (Math.abs(d) > 0.05) { const sg = Math.sign(d); if (dir[i] && sg !== dir[i]) rev++; dir[i] = sg; lastT[i] = q.tLat; } });
+    }
+    return { latSpeed: latSpeed(view()), reversalsPerAIper10s: +(rev / ai.length / 2).toFixed(1) };
+  });
+  ok('솔로: 좌우 이동은 사람과 같은 기본 속도(초당 도로 폭 1배), AI가 이리저리 흔들리지 않음', r.latSpeed === 1 && r.reversalsPerAIper10s < 5, JSON.stringify(r));
+
+  // --- 챔피언 AI ---
+  r = await page.evaluate(() => {
+    const trial = (lv) => {
+      startRace(1, 'road', lv); game.items = [];
+      const [me] = game.players; const ai = game.players[3];
+      let hits = 0, shots = 0;
+      for (let k = 0; k < 12; k++) {
+        step(0.8);
+        me.base = ai.base - 8; me.off = ai.off; me.lat = me.tLat = 0.5;
+        if (ai.protect > 0 || ai.slow > 0) { step(3.2); continue; }
+        me.attack = true; fire(me, ai.i); shots++;
+        step(0.4); if (ai.slow > 0) hits++;
+        step(3);
+      }
+      return +(hits / shots).toFixed(2);
+    };
+    const laser = () => {
+      // 챔피언 AI에게 레이저를 주면 앞 상대와 같은 줄로 가서 쏜다
+      startRace(1, 'road', 'champion'); game.items = [];
+      // 과녁은 피하지 않는 사람 카트다(AI끼리는 레이저를 피한다)
+      const ai = game.players[1], target = game.players[0];
+      ai.base = 500; target.base = 560; target.lat = target.tLat = 0.8; ai.lat = ai.tLat = 0.2; ai.laser = true;
+      for (const q of game.players.slice(2)) { q.base = 100; }
+      step(3);
+      return { fired: !ai.laser, targetHit: target.slow > 0 };
+    };
+    return { hard: trial('hard'), champion: trial('champion'), laser: laser(), speed: LEVELS.champion.speed };
+  });
+  ok('챔피언 AI: 속도는 사람과 같고(1.0) 공격을 어려운 AI보다 잘 피함', r.speed === 1 && r.champion < r.hard && r.champion <= 0.25, JSON.stringify(r));
+  ok('챔피언 AI: 레이저를 들면 상대 줄로 가서 맞힘', r.laser.fired && r.laser.targetHit, JSON.stringify(r.laser));
 
   // --- 정글: 바나나 ---
   r = await page.evaluate(() => {
@@ -587,6 +663,7 @@ const ok = (name, cond, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'} 
   await shot('rocketFly', 4, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=300+i*4;}); startCutscene(ps[2]); step(2.3);`, 'desert');
   await shot('storm4', 4, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=1000+i*6;}); game.items.push({wx:1030,lat:.5,type:'storm',row:-1,takenBy:null}); startStorm(ps[0]); step(0.9);`);
   await shot('solo', 1, `const ps=game.players; step(6);`, 'jungle');
+  await shot('sea2', 2, `const ps=game.players; ps.forEach((p,i)=>{p.mul=1;p.base=200+i*4;}); game.hazards.bubbles.push({wx:222,lat:.3,gone:false},{wx:230,lat:.7,gone:false}); ps[0].oxy=.18; ps[1].oxy=0; step(0.05);`, 'sea');
   await shot('s2goal', 2, `const ps=game.players; ps.forEach(p=>p.mul=1); ps[0].base=CONFIG.raceLength-25; ps[1].base=CONFIG.raceLength-30; ps[0].off=ps[0].tOff=10; game.items=[]; step(1.2);`);
   await page.setViewportSize({ width: 844, height: 390 });
   await page.evaluate(() => resize());
