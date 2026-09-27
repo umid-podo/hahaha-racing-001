@@ -2,7 +2,7 @@
 
 // 밸런스 초깃값. planning/02-game-design.md와 03-shared-track-revision.md의 제안값이며 플레이테스트로 조정한다.
 const CONFIG = {
-  raceLength: 5000, // m. 오래 즐길 수 있게 길게 잡았다
+  raceLength: 3000, // m
   baseSpeed: 25, // m/s
   boostMul: 1.6,
   boostTime: 2,
@@ -38,7 +38,12 @@ const CONFIG = {
   stormShots: 12, // 레이저 폭풍: 무작위 줄로 쏘는 레이저 수
   stormGap: 0.2, // 레이저 사이 간격(초)
   shieldTime: 4, // 레이저 폭풍을 쓴 사람의 무적 시간
-  soloAI: 12, // 솔로 모드 AI 수
+  soloAI: 9, // 솔로 모드 AI 수
+  soloLatSpeed: 1, // 솔로 모드 좌우 이동 속도(도로 폭/초). 도로가 넓어서 따로 정한다
+  oxyTime: 14, // 바다: 산소가 가득에서 바닥까지 줄어드는 시간(초)
+  oxyBubble: 0.3, // 비눗방울 하나로 차는 산소
+  oxyOut: 3, // 산소가 바닥나면 멈추는 시간
+  oxyRefill: 0.5, // 멈춘 뒤 다시 채워지는 산소
 };
 // 주행 화면에 보이는 거리. 솔로 모드는 화면 하나를 크게 쓰므로 더 넓다.
 const viewM = () => (game.solo ? CONFIG.soloViewMeters : CONFIG.viewMeters);
@@ -69,6 +74,8 @@ const LEVELS = {
   normal: { name: '보통 AI', speed: 0.93, react: 0.45, look: 28, avoid: 0.55, delay: 1.5, off: 0.45 },
   hard: { name: '어려운 AI', speed: 1, react: 0.25, look: 40, avoid: 0.85, delay: 0.7, off: 0.7 },
   expert: { name: '전문가 AI', speed: 1.07, react: 0.1, look: 55, avoid: 0.98, delay: 0.25, off: 0.95 },
+  // 챔피언: 속도는 사람과 같지만 공격·레이저를 잘 피하고, 레이저를 상대와 같은 줄에서 정확히 쏜다.
+  champion: { name: '챔피언 AI', speed: 1, react: 0.05, look: 70, avoid: 1, delay: 0.1, off: 1, pro: true },
 };
 
 // 코스별 색과 장애물. tip은 준비 화면, hint는 도움말 칸에 쓴다.
@@ -84,6 +91,10 @@ const COURSES = {
   arctic: {
     name: '북극 코스', tip: '물웅덩이에 빠지면 2초 동안 꽁꽁 얼어서 움직일 수 없어요.', hint: '물웅덩이 → 2초 꽁꽁',
     sky: '#f1f8ff', hill: '#f9fcff', tree: '#cfe8df', road: '#e8f2f8', curb: '#4a9be0', grass: '#8fb8cf',
+  },
+  sea: {
+    name: '바다 코스', tip: '산소가 점점 줄어요. 비눗방울에 닿으면 산소가 조금 차요. 산소가 바닥나면 3초 동안 멈춰요.', hint: '비눗방울 → 산소 충전',
+    sky: '#dff3fb', hill: '#bfe3ee', tree: '#7cc6a8', road: '#f1e4c3', curb: '#1fa9a0', grass: '#2f8f83',
   },
   desert: {
     name: '사막 코스', tip: '뱀이 도로를 가로질러 돌진해요. 부딪히면 4초 동안 해롱해롱, 조작이 반대로 돼요.', hint: '뱀 → 4초 조작 반대',
@@ -113,7 +124,7 @@ const game = {
   course: 'road',
   players: [],
   items: [],
-  hazards: { puddles: [], snakes: [], monkeys: [], bananas: [] },
+  hazards: { puddles: [], snakes: [], monkeys: [], bananas: [], bubbles: [] },
   hazardT: 0, // 다음 바나나를 던질 때까지
   raceT: 0, // 경기 중에만 흐르는 시계. 뱀의 움직임에 쓴다
   cut: null, // 로켓 컷신 { by, t }
@@ -313,6 +324,8 @@ const SOUNDS = {
   },
   dizzy: () => [0, 0.15, 0.3].forEach((at) => tone('sine', 500, 300, 0.15, 0.25, at)),
   toss: () => noise(800, 2000, 0.2, 0.3),
+  bubble: () => tone('sine', 400, 1400, 0.12, 0.3),
+  gasp: () => [0, 0.2].forEach((at) => tone('triangle', 500, 180, 0.25, 0.3, at)),
   // 레이저 폭풍: 전기가 튀는 소리와 올라가는 경보
   storm: () => {
     noise(3000, 6000, 0.5, 0.4);
@@ -431,6 +444,7 @@ function newRace() {
       boost: 0, slow: 0, protect: 0, hitFx: 0, attack: false, laser: false, touch: null, aim: null,
       slip: 0, slipDir: 1, freeze: 0, dizzy: 0, safe: 0, // 코스 장애물 상태
       shield: 0, // 레이저 폭풍을 쓴 뒤의 무적
+      oxy: 1, gasp: 0, // 바다: 산소(0~1)와 산소가 바닥나 멈춘 남은 시간
       // 사람이 조작하지 않는 카트(솔로 모드)는 AI가 몬다. skill은 난이도 속도에 약간의 개인차를 섞은 값이다.
       ai: i >= game.humans ? { think: Math.random() * 0.5, hold: 0, wander: Math.random() } : null,
       skill: i >= game.humans ? LEVELS[game.level].speed * (1 + (Math.random() - 0.5) * 0.04) : 1,
@@ -458,12 +472,11 @@ function newRace() {
 function makeItems(n) {
   const items = [];
   const cells = n <= 3 ? 2 : n <= 6 ? 3 : 5;
+  const KINDS = ['boost', 'attack', 'laser'];
   let wx = 105 + Math.random() * 20;
   for (let row = 0; wx <= CONFIG.raceLength - 100; row++) {
-    // 줄마다 부스터와 무기(공격 또는 레이저)가 적어도 하나씩 섞인다.
-    const weapon = () => (Math.random() < 0.35 ? 'laser' : 'attack');
-    const types = ['boost', weapon()];
-    while (types.length < cells) types.push(Math.random() < 0.5 ? 'boost' : weapon());
+    // 공격·레이저·부스터가 골고루 나오도록 줄마다 돌아가며 채운다. 한 줄 안에서는 되도록 겹치지 않는다.
+    const types = Array.from({ length: cells }, (_, c) => KINDS[(row * cells + c) % 3]);
     types.sort(() => Math.random() - 0.5);
     types.forEach((type, c) => {
       items.push({ wx, lat: (c + 0.5 + (Math.random() - 0.5) * 0.4) / cells, type, row, takenBy: null });
@@ -492,7 +505,7 @@ function rowXs(items) {
 
 // 코스 장애물. 물웅덩이와 뱀은 아이템 줄 사이에 놓아 아이템과 겹치지 않게 한다.
 function makeHazards(items, n) {
-  const hz = { puddles: [], snakes: [], monkeys: [], bananas: [] };
+  const hz = { puddles: [], snakes: [], monkeys: [], bananas: [], bubbles: [] };
   const xs = rowXs(items);
   const specials = items.filter((i) => SPECIAL.has(i.type));
   const spots = [60];
@@ -505,6 +518,14 @@ function makeHazards(items, n) {
       for (let c = 0; c < per; c++) {
         const lat = per === 1 ? 0.2 + Math.random() * 0.6 : (c + 0.3 + Math.random() * 0.4) / per;
         hz.puddles.push({ wx: x + (Math.random() - 0.5) * 8, lat: clamp(lat, 0.12, 0.88), len: 8 + Math.random() * 3, hl: 0.07 });
+      }
+    }
+  } else if (game.course === 'sea') {
+    // 비눗방울은 줄 사이마다 몇 개씩 흩어 놓는다. 먼저 닿은 카트가 터뜨려 산소를 얻는다.
+    const per = n <= 3 ? 2 : n <= 6 ? 3 : 4;
+    for (const x of free) {
+      for (let c = 0; c < per; c++) {
+        hz.bubbles.push({ wx: x + (Math.random() - 0.5) * 16, lat: (c + 0.2 + Math.random() * 0.6) / per, gone: false });
       }
     }
   } else if (game.course === 'desert') {
@@ -588,14 +609,19 @@ function launch() {
   }
 }
 
+// 초당 좌우 이동량(도로 폭 단위). 솔로 모드는 도로가 매우 넓어 화면 너비 기준이면 너무 빠르므로 따로 정한다.
+function latSpeed(v) {
+  return game.solo ? CONFIG.soloLatSpeed : (CONFIG.kartSpeed * v.d.w) / v.rh;
+}
+
 // 전후(off)와 좌우(lat)를 따로 움직인다. 전후는 터치만으로 순간 가속하지 못하게 더 느리다.
 function moveKarts(dt, fwd) {
   const v = view();
   const offStep = CONFIG.offSpeed * dt;
-  const latStep = ((CONFIG.kartSpeed * v.d.w) / v.rh) * dt;
+  const latStep = latSpeed(v) * dt;
   for (const p of game.players) {
-    // 미끄러지거나 얼어 있으면 조작이 먹히지 않는다.
-    if (p.slip > 0 || p.freeze > 0) continue;
+    // 미끄러지거나 얼었거나 산소가 바닥나면 조작이 먹히지 않는다.
+    if (p.slip > 0 || p.freeze > 0 || p.gasp > 0) continue;
     if (fwd) p.off += clamp(p.tOff - p.off, -offStep, offStep);
     p.lat += clamp(p.tLat - p.lat, -latStep, latStep);
   }
@@ -647,7 +673,7 @@ function updateRace(dt) {
   for (const p of game.players) {
     // 따라잡기 보정: 선두와 멀수록 조금 빨라진다.
     const catchUp = Math.min(CONFIG.catchMax, Math.floor((lead - p.wx) / CONFIG.catchStep) * CONFIG.catchGain);
-    const target = p.freeze > 0 ? 0
+    const target = p.freeze > 0 || p.gasp > 0 ? 0
       : (p.boost > 0 ? CONFIG.boostMul : 1) * (p.slow > 0 ? CONFIG.slowMul : 1) * (p.slip > 0 ? CONFIG.slipMul : 1) * (1 + catchUp) * p.skill;
     p.mul += clamp(target - p.mul, -CONFIG.accel * dt, CONFIG.accel * dt);
     p.base += CONFIG.baseSpeed * p.mul * dt;
@@ -662,6 +688,7 @@ function updateRace(dt) {
     p.freeze = Math.max(0, p.freeze - dt);
     p.safe = Math.max(0, p.safe - dt);
     p.shield = Math.max(0, p.shield - dt);
+    if (game.course === 'sea') breathe(p, dt);
     if (p.dizzy > 0) {
       p.dizzy = Math.max(0, p.dizzy - dt);
       if (p.dizzy === 0) resteer(p); // 해롱해롱이 풀리면 손가락 위치대로 다시 조향한다
@@ -804,12 +831,16 @@ function updateAI(dt) {
     if (!p.ai) continue;
     // 무기는 조금 들고 있다가 쓴다. 레이저는 앞쪽 같은 줄에 누가 있을 때 쏜다.
     p.ai.hold = p.attack || p.laser ? p.ai.hold + dt : 0;
-    if (p.attack && p.ai.hold > L.delay) fire(p, nearestAhead(p).i);
+    const foe = nearestAhead(p);
+    // 챔피언은 상대가 보호 중이면 기다렸다가 쏜다.
+    if (p.attack && p.ai.hold > L.delay && !(L.pro && foe.protect > 0 && p.ai.hold < 3)) fire(p, foe.i);
     if (p.laser && p.ai.hold > L.delay) {
-      const lined = game.players.some((q) => q !== p && q.wx > p.wx && q.wx < p.wx + 150 && Math.abs(q.lat - p.lat) < 0.05);
-      if (lined || p.ai.hold > L.delay * 3) fireLaser(p);
+      const lined = game.players.some((q) => q !== p && q.wx > p.wx && q.wx < p.wx + 150 && Math.abs(q.lat - p.lat) < (L.pro ? 0.03 : 0.05) && q.protect <= 0 && q.shield <= 0);
+      if (lined || p.ai.hold > L.delay * (L.pro ? 80 : 3)) fireLaser(p);
     }
     p.tOff = OFF_MAX * clamp(L.off + Math.sin(game.raceT * 0.3 + p.i) * 0.1, 0, 1);
+    // 챔피언은 자기를 노린 공격이나 뒤에서 오는 레이저를 보면 곧바로 다시 판단한다.
+    if (L.pro && (game.shots.some((sh) => sh.to === p.i) || game.beams.some((b) => !b.passed.has(p.i) && p.wx - beamFront(b) < 80))) p.ai.think = Math.min(p.ai.think, 0);
     p.ai.think -= dt;
     if (p.ai.think > 0) continue;
     p.ai.think = L.react * (0.7 + Math.random() * 0.6);
@@ -824,7 +855,7 @@ function updateAI(dt) {
 function aiPickLat(p, L) {
   const v = view();
   const band = (26 * v.s) / v.rh;
-  const latSpeed = (CONFIG.kartSpeed * v.d.w) / v.rh; // 초당 좌우 이동량
+  const latSp = latSpeed(v); // 초당 좌우 이동량
   const speed = CONFIG.baseSpeed * Math.max(0.5, p.mul);
   const near = (wx, len = 0) => wx + len / 2 > p.wx - 2 && wx - len / 2 < p.wx + L.look;
   const gap = (wx, len = 0) => Math.max(0, wx - len / 2 - p.wx);
@@ -832,14 +863,18 @@ function aiPickLat(p, L) {
   const sees = (k) => rnd(k * 7.31 + p.i * 13.7 + p.ai.wander * 101) < L.avoid;
   const hz = game.hazards;
   const items = game.items.filter((it) => it.takenBy === null && near(it.wx) && canTake(p, it));
-  const danger = []; // [줄, 반폭, 비용, 남은 거리(m)]
-  hz.puddles.forEach((pd, k) => near(pd.wx, pd.len) && sees(k) && danger.push([pd.lat, pd.hl + band * 1.3, 100, gap(pd.wx, pd.len)]));
-  for (const b of hz.bananas) if (near(b.wx) && sees(b.wx)) danger.push([b.lat, band * 1.5, 100, gap(b.wx)]);
-  hz.snakes.forEach((sn, k) => near(sn.wx) && sees(k + 0.5) && danger.push([snakePos(sn).lat, 0.3, 40, gap(sn.wx)]));
+  const danger = []; // [줄, 반폭, 비용, 앞끝까지 거리(m), 길이(m)]
+  hz.puddles.forEach((pd, k) => near(pd.wx, pd.len) && sees(k) && danger.push([pd.lat, pd.hl + band * 1.3, 100, gap(pd.wx, pd.len), pd.len]));
+  for (const b of hz.bananas) if (near(b.wx) && sees(b.wx)) danger.push([b.lat, band * 1.5, 100, gap(b.wx), 2]);
+  hz.snakes.forEach((sn, k) => near(sn.wx) && sees(k + 0.5) && danger.push([snakePos(sn).lat, 0.3, 40, gap(sn.wx), 3]));
   if (Math.random() < L.avoid) {
-    for (const sh of game.shots) if (sh.to === p.i) danger.push([sh.v, band * 2, 100, 0]);
-    for (const b of game.beams) if (!b.passed.has(p.i) && beamFront(b) < p.wx) danger.push([b.lat, band * 1.5, 80, 0]);
+    for (const sh of game.shots) if (sh.to === p.i) danger.push([sh.v, band * 2, 100, 0, 0]);
+    for (const b of game.beams) if (!b.passed.has(p.i) && beamFront(b) < p.wx) danger.push([b.lat, band * 1.5, 80, 0, 0]);
   }
+  // 바다에서는 산소가 적을수록 비눗방울을 찾아간다.
+  const air = hz.bubbles.filter((b) => near(b.wx)).map((b) => [b.lat, 10 + 50 * (1 - p.oxy)]);
+  // 챔피언이 레이저를 들고 있으면 앞 상대와 같은 줄로 가서 쏜다.
+  const aim = L.pro && p.laser ? game.players.filter((q) => q !== p && q.wx > p.wx + 5 && q.wx < p.wx + 150).map((q) => q.lat) : [];
   const value = { boost: 30, rocket: 60, storm: 50 };
   let best = p.lat;
   let bestScore = -Infinity;
@@ -847,12 +882,22 @@ function aiPickLat(p, L) {
     const lat = 0.02 + k * 0.048;
     const lo = Math.min(lat, p.lat);
     const hi = Math.max(lat, p.lat);
-    const reach = (Math.abs(lat - p.lat) / latSpeed) * speed + 3; // 옮겨 가는 동안 달리는 거리
     let score = -Math.abs(lat - p.lat) * 8 + Math.sin(p.ai.wander * 9 + lat * 5) * 0.5;
+    // 방금 고른 줄을 조금 더 좋아해서, 사람처럼 한 방향으로 꾸준히 움직이고 이리저리 흔들리지 않는다.
+    if (Math.abs(lat - p.tLat) < 0.03) score += 8;
     for (const it of items) if (Math.abs(it.lat - lat) < band) score += (value[it.type] ?? 20) * (1 - ((it.wx - p.wx) / L.look) * 0.5);
-    for (const [dl, w, cost, dist] of danger) {
-      if (Math.abs(dl - lat) < w) score -= cost * (1 - 0.7 * clamp(dist / L.look, 0, 1));
-      else if (dist < reach && dl + w > lo && dl - w < hi) score -= cost;
+    for (const [bl, bv] of air) if (Math.abs(bl - lat) < band * 1.5) score += bv;
+    for (const ql of aim) if (Math.abs(ql - lat) < 0.03) score += 35;
+    for (const [dl, w, cost, dist, len] of danger) {
+      if (Math.abs(dl - lat) < w) {
+        score -= cost * (1 - 0.7 * clamp(dist / L.look, 0, 1));
+      } else if (len > 0 && Math.abs(dl - p.lat) >= w && dl + w > lo && dl - w < hi) {
+        // 가는 길목: 옆으로 옮기는 동안 그 장애물의 줄을 지나는 때(들어감~나감)에 장애물 옆을 달리고 있으면 뺀다.
+        // 이미 그 위험 안에 있으면(날아오는 공격 등) 빠져나가는 길은 막지 않는다.
+        const xIn = (Math.max(0, Math.abs(dl - p.lat) - w) / latSp) * speed - 3;
+        const xOut = ((Math.abs(dl - p.lat) + w) / latSp) * speed + 3;
+        if (xOut > dist && xIn < dist + len) score -= cost;
+      }
     }
     if (score > bestScore) {
       best = lat;
@@ -864,8 +909,24 @@ function aiPickLat(p, L) {
 
 // ---------- 코스 장애물 ----------
 
+// 바다: 산소가 계속 줄고, 바닥나면 멈춰 있다가 조금 채워진 채로 다시 출발한다.
+function breathe(p, dt) {
+  if (p.gasp > 0) {
+    p.gasp = Math.max(0, p.gasp - dt);
+    if (p.gasp === 0) p.oxy = CONFIG.oxyRefill;
+    return;
+  }
+  p.oxy = Math.max(0, p.oxy - dt / CONFIG.oxyTime);
+  if (p.oxy > 0) return;
+  p.gasp = CONFIG.oxyOut;
+  p.mul = 0;
+  game.fx.push({ kind: 'gasp', to: p.i, u: p.off, lat: p.lat, t: 0 });
+  sfx('gasp');
+}
+
 const HAZARD_TIME = { slip: 'slipTime', freeze: 'freezeTime', dizzy: 'dizzyTime' };
-const HAZARD_TEXT = { slip: '미끌!', freeze: '꽁꽁!', dizzy: '해롱~' };
+const HAZARD_TEXT = { slip: '미끌!', freeze: '꽁꽁!', dizzy: '해롱~', gasp: '산소 부족!', bubble: '뽀글!' };
+const HAZARD_COLOR = { slip: '#e8a100', freeze: '#2f7be0', dizzy: '#8e5bd0', gasp: '#e8433a', bubble: '#1fa9a0' };
 
 function applyHazard(p, kind) {
   if (p.safe > 0 || p.shield > 0) return false;
@@ -895,7 +956,15 @@ function updateHazards(dt, v) {
       if (b.t < BANANA_FLY || b.gone) continue;
       if (Math.abs(p.wx - b.wx) < kartX && Math.abs(p.lat - b.lat) < kartLat) b.gone = applyHazard(p, 'slip');
     }
+    for (const b of hz.bubbles) {
+      if (b.gone || p.gasp > 0 || Math.abs(p.wx - b.wx) > kartX * 1.2 || Math.abs(p.lat - b.lat) > kartLat * 1.6) continue;
+      b.gone = true;
+      p.oxy = Math.min(1, p.oxy + CONFIG.oxyBubble);
+      game.fx.push({ kind: 'bubble', to: p.i, u: p.off, lat: p.lat, t: 0 });
+      sfx('bubble');
+    }
   }
+  hz.bubbles = hz.bubbles.filter((b) => !b.gone);
 
   // 정글: 원숭이가 가끔 어떤 카트 앞쪽 도로에 바나나 껍질을 던진다.
   if (hz.monkeys.length) {
@@ -1425,7 +1494,7 @@ function drawKart(x, y, s, color, pose, o = {}) {
   ctx.fill();
   ctx.stroke();
 
-  drawFace(hx + 5, hy, pose === 'lose', o.dizzy);
+  drawFace(hx + 5, hy, pose === 'lose' || o.gasp, o.dizzy);
 
   // 팔과 손
   ctx.lineWidth = 3;
@@ -1478,6 +1547,18 @@ function drawKart(x, y, s, color, pose, o = {}) {
       ctx.fill();
       ctx.stroke();
     }
+  }
+  // 산소가 바닥나 헐떡이는 모습: 머리 위로 물방울이 올라간다
+  if (o.gasp) {
+    ctx.strokeStyle = '#1fa9a0';
+    ctx.lineWidth = 2.5;
+    for (let k = 0; k < 3; k++) {
+      const q = (t * 1.5 + k / 3) % 1;
+      ctx.beginPath();
+      ctx.arc(hx + 30 + Math.sin(q * 6 + k) * 5, hy - 10 - q * 50, 4 + k * 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = INK;
   }
   // 레이저 폭풍을 쓴 사람의 무적 보호막
   if (o.shield) {
@@ -1615,6 +1696,18 @@ function drawRoad(d, s, roadTop, ppm, cam) {
   ctx.lineWidth = Math.max(1, 2 * s);
   eachTile(d, px * 0.1, 210 * s, (cx, k) => {
     const cy = d.y + (20 + rnd(k) * 34) * s;
+    if (course === 'sea') {
+      // 구름 대신 헤엄치는 물고기
+      const fx = cx + Math.sin(game.time + k) * 10 * s;
+      ctx.beginPath();
+      ctx.ellipse(fx, cy, 12 * s, 6 * s, 0, 0, Math.PI * 2);
+      ctx.moveTo(fx - 12 * s, cy);
+      ctx.lineTo(fx - 20 * s, cy - 6 * s);
+      ctx.lineTo(fx - 20 * s, cy + 6 * s);
+      ctx.closePath();
+      ctx.stroke();
+      return;
+    }
     ctx.beginPath();
     ctx.arc(cx - 14 * s, cy, 10 * s, Math.PI * 0.9, Math.PI * 1.9);
     ctx.arc(cx, cy - 6 * s, 13 * s, Math.PI * 1.1, Math.PI * 1.95);
@@ -1647,7 +1740,17 @@ function drawRoad(d, s, roadTop, ppm, cam) {
     if (rnd(k * 1.7) < 0.35) return;
     const h = (24 + rnd(k * 2.3) * 14) * s;
     ctx.fillStyle = T.tree;
-    if (course === 'jungle') {
+    if (course === 'sea') {
+      // 물결치는 해초
+      ctx.strokeStyle = T.tree;
+      ctx.lineWidth = Math.max(2, 5 * s);
+      ctx.beginPath();
+      ctx.moveTo(x, roadTop);
+      for (let k2 = 1; k2 <= 6; k2++) ctx.lineTo(x + Math.sin(game.time * 2 + k + k2) * 6 * s, roadTop - (h * 1.5 * k2) / 6);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(43,38,34,.45)';
+      ctx.lineWidth = Math.max(1, 2 * s);
+    } else if (course === 'jungle') {
       line(x, roadTop, x + 6 * s, roadTop - h * 1.6);
       for (const a of [-2.6, -2, -1.2, -0.5]) {
         ctx.beginPath();
@@ -1688,6 +1791,18 @@ function drawRoad(d, s, roadTop, ppm, cam) {
     }
   });
 
+  if (course === 'sea') {
+    // 떠오르는 작은 물방울
+    ctx.strokeStyle = 'rgba(31,169,160,.6)';
+    ctx.lineWidth = 1;
+    eachTile(d, px * 0.3, 70 * s, (x, k) => {
+      const rise = roadTop - d.y;
+      const y = roadTop - ((game.time * 25 * s + rnd(k) * rise) % rise);
+      ctx.beginPath();
+      ctx.arc(x + Math.sin(game.time * 3 + k) * 4 * s, y, 3 * s, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+  }
   if (course === 'arctic') {
     // 내리는 눈
     ctx.fillStyle = '#fff';
@@ -1955,6 +2070,24 @@ function drawBanana(x, y, s, rot = 0) {
   ctx.restore();
 }
 
+// 산소 비눗방울. (x, y)는 도로 위 자리이고 살짝 떠서 흔들린다.
+function drawBubble(x, y, s, k = 0) {
+  const by = y - (22 + Math.sin(game.time * 3 + k) * 4) * s;
+  const r = 13 * s;
+  ctx.fillStyle = 'rgba(210,244,255,.55)';
+  ctx.strokeStyle = '#1fa9a0';
+  ctx.lineWidth = Math.max(1.5, 2.5 * s);
+  ctx.beginPath();
+  ctx.arc(x, by, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(x - r * 0.3, by - r * 0.3, r * 0.4, Math.PI * 1.1, Math.PI * 1.7);
+  ctx.stroke();
+  text('O₂', x, by + s, 10 * s, '#1fa9a0');
+}
+
 // 물웅덩이. rx·ry는 화면 픽셀 반지름이다.
 function drawPuddle(x, y, rx, ry, s) {
   ctx.lineWidth = Math.max(1.5, 2.5 * s);
@@ -2102,6 +2235,7 @@ function drawDrive(d, me) {
   for (const b of hz.bananas) {
     if (b.t >= BANANA_FLY && onScreen(xOf(b.wx))) drawBanana(xOf(b.wx), yOf(b.lat), s);
   }
+  hz.bubbles.forEach((b, k) => onScreen(xOf(b.wx)) && drawBubble(xOf(b.wx), yOf(b.lat), s, k));
   for (const sn of hz.snakes) {
     const x = xOf(sn.wx);
     if (!onScreen(x)) continue;
@@ -2170,7 +2304,7 @@ function drawDrive(d, me) {
     drawKart(k.x, k.y, s, PLAYERS[q.i].color, pose, {
       boost: q.boost > 0, slow: q.slow > 0, wobble: q.hitFx / 0.6, blink: q.protect > 0,
       mul: q.mul, spin: q.spin, tag: q.i + 1, me: q === me,
-      slip: q.slip > 0 && CONFIG.slipTime - q.slip, frozen: q.freeze > 0, dizzy: q.dizzy > 0, shield: q.shield > 0,
+      slip: q.slip > 0 && CONFIG.slipTime - q.slip, frozen: q.freeze > 0, dizzy: q.dizzy > 0, shield: q.shield > 0, gasp: q.gasp > 0,
     });
   }
 
@@ -2247,7 +2381,7 @@ function drawDrive(d, me) {
     } else if (f.kind === 'miss') {
       text('휙~', ix, iy - f.t * 40 * s, 24 * s, 'rgba(43,38,34,.7)');
     } else if (HAZARD_TEXT[f.kind]) {
-      text(HAZARD_TEXT[f.kind], ix, iy - 30 * s - f.t * 40 * s, 26 * s, { slip: '#e8a100', freeze: '#2f7be0', dizzy: '#8e5bd0' }[f.kind], 'center', '#fff');
+      text(HAZARD_TEXT[f.kind], ix, iy - 30 * s - f.t * 40 * s, 26 * s, HAZARD_COLOR[f.kind], 'center', '#fff');
     } else if (f.kind === 'pick') {
       // 가져간 카트의 색으로 퍼지는 고리
       ctx.strokeStyle = PLAYERS[f.by].color;
@@ -2364,8 +2498,31 @@ function drawDrive(d, me) {
     me.freeze > 0 && [`꽁꽁 ${me.freeze.toFixed(1)}s`, '#2f7be0'],
     me.dizzy > 0 && [`해롱해롱 ${me.dizzy.toFixed(1)}s`, '#8e5bd0'],
     me.shield > 0 && [`무적 ${me.shield.toFixed(1)}s`, '#8e5bd0'],
+    me.gasp > 0 && [`산소 부족 ${me.gasp.toFixed(1)}s`, '#e8433a'],
   ].filter(Boolean);
   status.forEach(([label, color], k) => text(label, d.x + d.w - 6, d.y + fs * (2.1 + k * 1.1), fs * 0.9, color, 'right', SKY));
+
+  // 바다: 이름 아래 산소 게이지
+  if (game.course === 'sea') {
+    const gx = hudX;
+    const gy = d.y + fs * 1.85;
+    const gw = fs * 6;
+    const gh = fs * 0.55;
+    text('O₂', gx, gy + gh / 2, fs * 0.7, '#1fa9a0', 'left', SKY);
+    rr(gx + fs * 1.3, gy, gw, gh, gh / 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    const low = me.oxy < 0.25 && !me.gasp;
+    if (me.oxy > 0) {
+      rr(gx + fs * 1.3, gy, Math.max(gh, gw * me.oxy), gh, gh / 2);
+      ctx.fillStyle = me.gasp > 0 ? '#bbb' : low && Math.sin(game.time * 12) > 0 ? '#e8433a' : me.oxy < 0.25 ? '#f08a2e' : '#1fa9a0';
+      ctx.fill();
+    }
+    rr(gx + fs * 1.3, gy, gw, gh, gh / 2);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
 
   if (ended) {
     const won = game.winners.includes(me.i);
@@ -2437,7 +2594,7 @@ function drawPad(pan, p) {
   ctx.globalAlpha = 0.45;
   text(`${P.name} 터치 화면`, pad.x + pad.w / 2, pad.y + pad.h / 2, clamp(pad.h * 0.16, 12, 30), P.color);
   ctx.globalAlpha = 1;
-  const lock = p.freeze > 0 ? '꽁꽁! 움직일 수 없어요' : p.slip > 0 ? '미끌! 움직일 수 없어요' : p.dizzy > 0 ? '해롱해롱~ 조작이 반대로!' : '';
+  const lock = p.gasp > 0 ? '산소 부족! 3초 동안 멈춰요' : p.freeze > 0 ? '꽁꽁! 움직일 수 없어요' : p.slip > 0 ? '미끌! 움직일 수 없어요' : p.dizzy > 0 ? '해롱해롱~ 조작이 반대로!' : '';
   if (lock) text(lock, pad.x + pad.w / 2, pad.y + pad.h * 0.22, clamp(pad.h * 0.14, 11, 24), p.dizzy > 0 ? '#8e5bd0' : '#2f7be0', 'center', '#fff');
 
   // 주행 영역 속 카트 위치를 조작 공간에 대응시켜 보여준다.
@@ -2681,6 +2838,9 @@ function drawTitleScene() {
     drawBanana(W * 0.64, H * 0.95, s * 1.2);
   } else if (game.course === 'arctic') {
     drawPuddle(W * 0.64, H * 0.94, 90 * s, 18 * s, s);
+  } else if (game.course === 'sea') {
+    drawBubble(W * 0.62, H * 0.95, s * 1.4);
+    drawBubble(W * 0.7, H * 0.9, s * 1.1, 2);
   } else if (game.course === 'desert') {
     drawSnake(W * 0.64, H * 0.84 + Math.sin(game.time * 2) * 20 * s, s * 1.2, 1, true);
   }
@@ -2690,7 +2850,8 @@ function drawTitleScene() {
 function render() {
   ctx.fillStyle = PAPER;
   ctx.fillRect(0, 0, W, H);
-  if (game.state === 'title' || game.state === 'select' || game.state === 'course') drawTitleScene();
+  // 메뉴 화면(인원수·난이도·코스 선택) 뒤에는 타이틀 장면을 그린다. 아직 경기가 없으면 그릴 카트도 없다.
+  if (['title', 'select', 'level', 'course'].includes(game.state)) drawTitleScene();
   else if (game.state === 'result') drawPodium();
   else drawRaceScreen();
 }
@@ -2698,13 +2859,14 @@ function render() {
 // ---------- 시작 ----------
 
 let last = performance.now();
+// 다음 프레임을 먼저 예약해서, 한 프레임에서 오류가 나도 게임 루프가 멈춰 화면이 굳지 않게 한다.
 function frame(now) {
+  requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   update(dt);
   updateEngine();
   render();
-  requestAnimationFrame(frame);
 }
 
 resize();
